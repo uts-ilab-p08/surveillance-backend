@@ -1,0 +1,19 @@
+# Local dev only. In staging/prod, DATABASE_URL points at Supabase Postgres
+# instead and this file isn't used. Plain Postgres — this repo doesn't need
+# the pgvector extension, since embeddings/vector search live in the RAG
+# team's own service, not here.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: surveillance
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
