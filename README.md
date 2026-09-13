@@ -1,95 +1,129 @@
 # Surveillance Video Query API — Backend
 
-FastAPI backend for the "Interactive Surveillance Video Querying Using LLMs
-and Multi-Camera CCTV Datasets" project.
+This is the FastAPI service behind the Interactive Surveillance Video
+Querying project. The product flow is: a user types a natural-language
+query, this backend authenticates them and forwards the query to the RAG
+service, and whatever RAG sends back — the top handful of matching video
+clips, each with a confidence score — goes straight to the frontend. This
+repo owns exactly two things: user auth, and that search relay.
 
-**Scope: this repo is box 3 only ("Backend — FastAPI") — Auth, Core
-Endpoints, Postgres, and Video File Storage.** Box 1 (annotation pipeline)
-and box 2 (RAG: vector DB + LLM) are separate repos owned by teammates.
-This backend never runs a vision-language model, never talks to a vector
-store, and never calls an LLM SDK directly — it owns user/video metadata
-and orchestrates the other two boxes over HTTP.
+It deliberately does **not** run a vision-language model, does not touch a
+vector store, and does not call an LLM directly — that's the RAG team's
+service. It also doesn't store or serve video files itself: raw footage,
+annotations, and playback URLs live in the annotation team's `bronze`
+schema and Cloudflare R2 bucket
+([video-annotation-pipeline](https://github.com/uts-ilab-p08/video-annotation-pipeline.git),
+metadata/CV pipeline in
+[videometa](https://github.com/uts-ilab-p08/videometa.git)). There's no
+user-facing video upload in this product yet, so this backend has no video
+data of its own to manage.
 
-## Decisions made so far
+## How it fits together
 
-| Area | Choice | Why |
-|---|---|---|
-| Inter-repo integration | **HTTP calls to each sibling service**, contracts documented in `app/services/annotation_client.py` and `app/services/rag_client.py` | You confirmed each box is its own repo/deployable. Backend calls out; it doesn't share a DB or poll for work. |
-| Annotation pipeline hookup | `POST /annotate` → `POST {ANNOTATION_SERVICE_URL}/jobs`, pipeline reports back via `POST /videos/{id}/annotation-callback` (shared-secret header, not user auth) | Annotation is slow/async, so a fire-and-forget job + callback fits better than the backend blocking or polling. |
-| RAG hookup | `GET /search` → `POST {RAG_SERVICE_URL}/query`, response passed straight through | Backend does no retrieval or generation itself; it's a thin authenticated proxy in front of the RAG service. |
-| DB access | **SQLAlchemy 2.0 + Alembic migrations** | Assumed (you hadn't specified) — the standard, portable choice for a direct Postgres/Supabase connection. |
-| Auth | **HTTP Basic Auth**, bcrypt-hashed passwords, one `get_current_user` dependency protecting every user-facing route | Matches the diagram. Upgrade path to JWT/sessions documented in `app/api/deps.py` as a one-function change. |
-| Backend's own DB schema | `users`, `cameras`, `videos` (+ `annotation_status`/`annotation_error`), `saved_queries` — **no captions, no embeddings** | Those live in the RAG repo's own store. Keeping them out of this schema means this repo never has to track that service's embedding model/dimension. |
+- **Annotation pipeline repo** — a set of notebooks (not yet a live
+  service) that pull MEVA clips, run motion/object detection and a local
+  VLM over them, and load the results into the shared Supabase project's
+  `bronze` schema, with the actual video files hosted on Cloudflare R2.
+- **RAG repo** — vector search + LLM. `GET /search` forwards the query
+  there and passes the response straight back, including each result's
+  video reference, playback URL, and confidence score. Retrieval and
+  generation both happen on their side.
+- **This repo** — auth and the one endpoint the frontend actually calls
+  for search.
 
-Both sibling-service clients work with **no service configured**
-(`ANNOTATION_SERVICE_URL` / `RAG_SERVICE_URL` unset): `/annotate` accepts
-the job and just logs instead of calling out (status sits at
-`processing` until you flip it via the callback endpoint, e.g. with curl),
-and `/search` returns a canned mock answer. That means this repo is fully
-runnable and testable on its own before either sibling repo exists —
-swap the URLs in when they're deployed, no code changes needed.
+The RAG integration works without that service running: leave
+`RAG_SERVICE_URL` unset and `/search` falls back to a mock response.
+Useful for developing or demoing this repo on its own — flip the URL on
+once RAG is up, no code changes needed.
 
-## What's added beyond the diagram (and why)
+## Getting started
 
-- **`POST /videos/upload`** — the diagram's stage 1 starts from "unannotated
-  clips from storage / new uploads," but nothing produces that storage
-  entry. This endpoint saves the file (local disk in dev, Supabase Storage
-  in prod — `app/services/storage.py`) and creates the `Video` row that
-  `/annotate` and the pipeline service operate on.
-- **`POST /videos/{id}/annotation-callback`** — the pipeline service's way
-  of reporting a job finished. Guarded by a shared-secret header
-  (`ANNOTATION_CALLBACK_SECRET`), not user Basic Auth, since it's
-  machine-to-machine.
-- **`GET /health`** — unauthenticated liveness check for deploy
-  platforms/uptime monitors.
-- **`annotation_status` / `annotation_error` on `Video`** — since
-  annotation is async now, the frontend needs somewhere to poll.
-- `/api/v1` prefix on every route except `/health`.
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 
-Deliberately **not** built yet: rate limiting, request logging middleware,
-retry/backoff on the sibling-service calls, pagination cursors beyond
-offset/limit, and the "Plus" box (saved-queries CRUD, exports, roles) — the
-`SavedQuery` table exists so that's a routes-only addition later.
+# local Postgres (dev only — in staging/prod the DB_* fields in .env
+# point at the shared Supabase project instead)
+docker compose up -d
 
-## Contracts with the other two repos
+# first time only: apply migrations
+alembic upgrade head
 
-Share these with the annotation-pipeline and RAG teammates — they're the
-only coupling between the repos.
-
-**Annotation pipeline** (`app/services/annotation_client.py`):
+uvicorn app.main:app --reload
 ```
-Backend  -> POST {ANNOTATION_SERVICE_URL}/jobs
-            {"video_id": "...", "video_url": "<reachable storage URL>",
-             "callback_url": "<this backend's callback URL>"}
-Pipeline -> POST {callback_url}
-            {"status": "done" | "failed", "error": "..." (if failed)}
-            header: X-Callback-Secret: <ANNOTATION_CALLBACK_SECRET>
+
+There's no `/register` endpoint yet, so add yourself a user straight in the
+DB:
+
+```bash
+python -c "
+from app.db.session import SessionLocal
+from app.db.models import User
+from app.core.security import hash_password
+db = SessionLocal()
+db.add(User(username='investigator1', hashed_password=hash_password('testpass123')))
+db.commit()
+"
 ```
+
+Everything lives under `/api/v1` except `/health`. Swagger docs at `/docs`
+once it's running.
+
+**Heads up on a dependency quirk:** `passlib` (the password-hashing library)
+hasn't been updated in a while and breaks on newer `bcrypt` releases —
+`requirements.txt` pins `bcrypt==4.0.1` to work around it. If you ever see
+`AttributeError: module 'bcrypt' has no attribute '__about__'` after
+installing, something bumped bcrypt past that pin; reinstall with
+`pip install "bcrypt==4.0.1"`.
+
+## Endpoints
+
+| Endpoint | What it does |
+|---|---|
+| `POST /auth/login` | Checks a username/password pair. Basic Auth on every request *is* the session, so this is mainly for the frontend to verify credentials once. |
+| `GET /search` | Forwards a natural-language query to the RAG service and returns its answer plus the matching clips (video reference, playback URL, time range, caption, confidence score). |
+| `GET /health` | Plain liveness check, no auth — for uptime monitors and deploy platforms. |
+
+Auth is HTTP Basic for now, with bcrypt-hashed passwords at rest —
+`app/api/deps.py` has a note on how to swap in JWT/sessions later without
+touching route signatures.
+
+Not built yet, on purpose: rate limiting, request logging middleware,
+retry/backoff on the outbound RAG call, and the saved-queries endpoints
+(the `SavedQuery` table exists for search history, the routes don't —
+a quick follow-up whenever it's needed). Video upload and the annotation
+hand-off (`POST /videos/upload`, `POST /annotate`) were removed — the
+product doesn't let users upload footage right now, so there was nothing
+for this backend to own there. If that changes later, both come back as a
+scoped follow-up rather than dead code sitting around unused.
+
+## Talking to the RAG repo
+
+This one contract is the entire coupling between this repo and the RAG
+repo — and it's also the whole product's search path (user query -> this
+endpoint -> RAG -> top-K videos with confidence scores -> frontend). If
+the shape needs to change, it's a conversation with that team first.
 
 **RAG service** (`app/services/rag_client.py`):
 ```
 Backend -> POST {RAG_SERVICE_URL}/query
            {"query": "...", "limit": 10}
 RAG     -> 200 {"answer": "...",
-                "results": [{"video_id": "...", "start_seconds": 0.0,
-                              "end_seconds": 10.0, "caption": "...",
-                              "score": 0.83}, ...]}
+                "results": [{"video_id": "<bronze video_id, a sha256 hex
+                              string — not a UUID>",
+                             "video_url": "<public R2 URL, if available>",
+                             "start_seconds": 0.0, "end_seconds": 10.0,
+                             "caption": "...", "score": 0.83}, ...]}
 ```
 
-These are proposals, not settled — confirm the exact shape with each team
-before they build against it; the schemas live in `app/schemas/video.py`
-(`AnnotationCallback`) and `app/schemas/rag.py` (`RagQueryResult`) so
-changes are a one-file diff.
-
-## On "should an agent orchestrate this?"
-
-Not for this repo. It's a thin, synchronous FastAPI service that owns
-metadata/storage and makes two outbound HTTP calls — a job-orchestration or
-agent framework would add moving parts without solving a problem this repo
-has. If anything in this project wants an agentic pattern, it's inside the
-RAG repo's query-understanding step (turning "did anyone enter after the
-red car arrived" into structured filters) — that's their concern, not
-something wrapped around this backend.
+The corresponding schema lives in `app/schemas/rag.py`
+(`RagQueryResult`), so a shape change is a one-file diff on this side.
+Worth confirming with both the RAG and annotation teams: `video_id` here
+is whatever the annotation pipeline's `bronze.videos.video_id` is (a
+SHA-256 hash of the original video name) — this backend doesn't mint its
+own video IDs, so search results only make sense if RAG and the
+annotation pipeline agree on that same identifier.
 
 ## Project layout
 
@@ -100,53 +134,53 @@ app/
     config.py          Settings (env vars / .env)
     security.py        Password hashing
   db/
-    models.py           SQLAlchemy models (User, Camera, Video, SavedQuery)
+    models.py           SQLAlchemy models (User, SavedQuery)
     session.py           Engine + per-request session dependency
   schemas/               Pydantic request/response models (incl. rag.py — the RAG contract)
   api/
     deps.py               Basic Auth dependency
-    routes/               auth, videos, annotate (+callback), search, health
+    routes/               auth, search, health
   services/
-    annotation_client.py   HTTP client -> annotation-pipeline repo
     rag_client.py            HTTP client -> RAG repo
-    storage.py                Video file storage abstraction (local/Supabase)
 alembic/                  DB migrations
 tests/
 ```
 
-## Running locally
+## Testing it end-to-end
+
+This runs every route against a real Postgres instance, with the RAG
+service left on its built-in mock:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-
-# start local Postgres (no vector extension needed — that's the RAG repo's DB)
-docker compose up -d
-
-# generate + apply the initial migration
-alembic revision --autogenerate -m "initial schema"
 alembic upgrade head
+uvicorn app.main:app --reload &
 
-uvicorn app.main:app --reload
+AUTH="-u investigator1:testpass123"   # after creating the user, see above
+
+# login
+curl -s $AUTH -X POST http://localhost:8000/api/v1/auth/login
+
+# search (mocked until RAG_SERVICE_URL is set)
+curl -s $AUTH "http://localhost:8000/api/v1/search?q=did+anyone+enter+the+building"
+
+# unit tests
+pytest tests/ -q
 ```
 
-Auth: create a user directly in the DB for now (no `/register` endpoint —
-add one if self-serve signup is needed; the diagram doesn't call for it).
+Auth correctly rejects a wrong password and no credentials; login and
+search round-trip cleanly through a real database.
 
-Endpoints live under `/api/v1` except `/health`. Interactive docs at
-`/docs` once the app is running. `ANNOTATION_SERVICE_URL` and
-`RAG_SERVICE_URL` can stay unset while developing standalone — see mock
-behavior above.
+## What's next
 
-## Next steps
-
-1. Align the two HTTP contracts above with the annotation-pipeline and RAG
-   teammates; adjust `app/schemas/video.py` / `app/schemas/rag.py` and the
-   two client modules once they're confirmed.
-2. Point `DATABASE_URL` at the real Supabase project.
-3. Wire `SupabaseStorageBackend` in `app/services/storage.py` once a bucket
-   exists, and make sure `video_url` sent to the annotation service is
-   something that service can actually reach (signed URL, likely).
-4. Set `ANNOTATION_SERVICE_URL` / `RAG_SERVICE_URL` / matching
-   `ANNOTATION_CALLBACK_SECRET` once those services are deployed.
+1. Confirm the RAG contract above with the RAG team — update
+   `app/schemas/rag.py` and `app/services/rag_client.py` once it's locked
+   in, including how `video_id` lines up with the annotation pipeline's
+   `bronze.videos.video_id`.
+2. Set `RAG_SERVICE_URL` once that service is deployed (or reachable via a
+   tunnel for local testing).
+3. Decide whether saved-search history is in scope for this phase — if so,
+   add the `POST/GET /saved-queries` routes against the existing
+   `SavedQuery` table.
+4. Deploy this API somewhere with a real, reachable URL (Render/Railway are
+   reasonable free-tier options) so the frontend isn't stuck pointing at
+   `localhost`.

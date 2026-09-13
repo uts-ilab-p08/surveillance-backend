@@ -1,17 +1,15 @@
 """
-Core metadata schema — this is ALL the backend repo owns per the diagram's
-PostgreSQL box: "video metadata, users + credentials, saved queries."
-
-Captions, embeddings, and the vector index live in the RAG team's repo/
-database, not here — the backend never stores or searches embeddings
-itself, it only calls that service (see app/services/rag_client.py). That
-keeps this schema decoupled from whatever embedding model/dimension they
-end up choosing.
+Core metadata schema — this backend now only owns auth and (optionally)
+saved searches. Video/camera metadata, captions, and embeddings all live
+on the other two teams' side: raw video + annotations in the annotation
+team's `bronze` schema and R2 bucket, vectors/search in the RAG service.
+This backend is an auth layer plus a thin relay to that RAG service (see
+app/services/rag_client.py) — it doesn't store or search video data itself.
 """
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Text, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,48 +31,13 @@ class User(Base):
     saved_queries: Mapped[list["SavedQuery"]] = relationship(back_populates="user")
 
 
-class Camera(Base):
-    """A physical/logical camera feed within a multi-camera dataset."""
-
-    __tablename__ = "cameras"
-
-    id: Mapped[uuid.UUID] = _uuid_pk()
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
-    location: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    dataset: Mapped[str | None] = mapped_column(String(64), nullable=True)  # e.g. "MEVA", "VIRAT"
-
-    videos: Mapped[list["Video"]] = relationship(back_populates="camera")
-
-
-class Video(Base):
-    """A single stored video file/clip referenced from Video File Storage."""
-
-    __tablename__ = "videos"
-
-    id: Mapped[uuid.UUID] = _uuid_pk()
-    camera_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cameras.id"), nullable=True)
-    storage_path: Mapped[str] = mapped_column(String(512), nullable=False)  # bucket key / local path
-    original_filename: Mapped[str] = mapped_column(String(256), nullable=False)
-    duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
-    recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-    # pending -> processing (annotation service accepted the job) -> done | failed
-    # (set by the annotation service calling back into
-    # POST /videos/{id}/annotation-callback, see app/api/routes/annotate.py)
-    annotation_status: Mapped[str] = mapped_column(String(32), default="pending")
-    annotation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    camera: Mapped["Camera | None"] = relationship(back_populates="videos")
-
-
 class SavedQuery(Base):
-    """Plus/future: a user's saved natural-language search."""
+    """A user's saved natural-language search, for history/re-run later."""
 
     __tablename__ = "saved_queries"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("app.users.id"), nullable=False)
     query_text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

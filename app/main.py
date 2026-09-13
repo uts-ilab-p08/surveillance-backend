@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import annotate, auth, health, search, videos
+from app.api.routes import auth, health, search
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -26,6 +26,4 @@ app.include_router(health.router)
 
 api_router_prefix = settings.api_v1_prefix
 app.include_router(auth.router, prefix=api_router_prefix)
-app.include_router(videos.router, prefix=api_router_prefix)
-app.include_router(annotate.router, prefix=api_router_prefix)
 app.include_router(search.router, prefix=api_router_prefix)

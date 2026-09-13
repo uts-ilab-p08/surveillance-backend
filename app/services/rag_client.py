@@ -1,14 +1,18 @@
 """
-HTTP client for the RAG repo (diagram box 2 — vector DB + LLM, a separate
-service/repo owned by teammates). The backend never talks to a vector store
-or an LLM SDK directly; it forwards the natural-language query and returns
-whatever that service answers.
+HTTP client for the RAG repo (vector DB + LLM, a separate service/repo
+owned by teammates). The backend never talks to a vector store or an LLM
+SDK directly; it forwards the natural-language query and returns whatever
+that service answers — this is the entire product's search path: user
+query -> this endpoint -> RAG -> top-K videos with confidence scores ->
+straight back to the frontend.
 
 Contract with that service (align on this with the RAG team):
   Backend -> POST {RAG_SERVICE_URL}/query
              {"query": "...", "limit": 10}
   Service -> 200 {"answer": "...",
-                  "results": [{"video_id": "...", "start_seconds": 0.0,
+                  "results": [{"video_id": "<bronze video_id, a sha256 hex
+                                string>", "video_url": "<public R2 URL, if
+                                available>", "start_seconds": 0.0,
                                 "end_seconds": 10.0, "caption": "...",
                                 "score": 0.83}, ...]}
 
