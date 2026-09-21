@@ -14,6 +14,11 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Stubs a minimal auth.users table so app.saved_queries/recent_queries'
+      # FK to auth.users(id) can exist locally too — see db-init/'s own
+      # comment for why. Only runs on first container init (empty pgdata
+      # volume); `docker compose down -v` + `up -d` re-applies it.
+      - ./db-init:/docker-entrypoint-initdb.d
 
 volumes:
   pgdata:

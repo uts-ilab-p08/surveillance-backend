@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.api.deps import get_current_user
-from app.db.models import User
+from app.api.deps import CurrentUser, get_current_user
 from app.schemas.rag import RagQueryResult
 from app.services.rag_client import RagServiceUnavailable, query as rag_query
 
@@ -12,7 +11,7 @@ router = APIRouter(tags=["search"])
 def search(
     q: str,
     limit: int = 10,
-    _user: User = Depends(get_current_user),
+    _user: CurrentUser = Depends(get_current_user),
 ) -> RagQueryResult:
     """
     Diagram's "GET /search — NL query via RAG". The backend does no

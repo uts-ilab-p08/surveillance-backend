@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, health, search
+from app.api.routes import cameras, clips, health, queries, search
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -25,5 +25,7 @@ app.add_middleware(
 app.include_router(health.router)
 
 api_router_prefix = settings.api_v1_prefix
-app.include_router(auth.router, prefix=api_router_prefix)
 app.include_router(search.router, prefix=api_router_prefix)
+app.include_router(clips.router, prefix=api_router_prefix)
+app.include_router(cameras.router, prefix=api_router_prefix)
+app.include_router(queries.router, prefix=api_router_prefix)

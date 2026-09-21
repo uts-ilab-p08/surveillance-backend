@@ -18,8 +18,10 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     cors_origins: str = "http://localhost:3000"
 
-    # Database — this backend's own Postgres schema ("app"), holding just
-    # users and (optionally) saved queries. Video/camera metadata, captions,
+    # Database — this backend's own Postgres schema ("app"), holding
+    # per-user query history (saved_queries, recent_queries). No users
+    # table of our own: identity is Supabase Auth's, see supabase_jwt_secret
+    # below. Video/camera metadata, captions,
     # and embeddings all live outside this backend: raw video + annotations
     # in the annotation team's "bronze" schema and R2 bucket, vectors in the
     # RAG service's own store.
@@ -49,8 +51,15 @@ class Settings(BaseSettings):
             database=self.db_name,
         )
 
-    # Auth (Basic Auth now; secret reserved for the future JWT upgrade)
-    secret_key: str = "change-me-in-production"
+    # Auth — identity lives entirely in Supabase Auth (GoTrue), not this
+    # backend. The frontend logs users in directly against Supabase and
+    # sends the resulting JWT as "Authorization: Bearer <token>"; this
+    # backend only verifies that token's signature/expiry and reads the
+    # user id out of its "sub" claim (see app/api/deps.py). There is no
+    # /auth/register or /auth/login here and no local password storage —
+    # Supabase's dashboard (Project Settings -> API -> JWT Secret) has this
+    # value.
+    supabase_jwt_secret: str = "change-me-in-production"
 
     # RAG / vector search + LLM: GET /search calls {rag_service_url}/query.
     # Left unset in dev -> app/services/rag_client.py returns a canned mock
