@@ -1,0 +1,41 @@
+# Render Blueprint — lets Render auto-configure this service from the repo
+# instead of clicking through the dashboard by hand. See README's
+# "Deploying to Render" section for the one-time setup steps (connecting
+# the repo, filling in the secret env vars Render can't infer from here).
+services:
+  - type: web
+    name: surveillance-backend
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    # Applying migrations on every boot is idempotent (already-applied
+    # migrations are a no-op) and keeps the deployed schema from silently
+    # drifting behind what's in alembic/versions/.
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: API_V1_PREFIX
+        value: /api/v1
+      # Everything below holds a real secret or a value specific to your
+      # Supabase project / frontend deploy — Render can't infer these from
+      # the repo, so `sync: false` means "prompt for it in the dashboard,
+      # don't read it from this file." Never put the actual values here.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: RAG_SERVICE_URL
+        sync: false

@@ -225,6 +225,37 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 pytest tests/ -q
 ```
 
+## Deploying to Render
+
+`render.yaml` is a Blueprint — Render reads it to auto-configure the
+service instead of you clicking through settings by hand. One-time setup:
+
+1. Push this repo to GitHub (already done — `main` is up to date).
+2. In the Render dashboard: **New +** -> **Blueprint** -> connect the
+   `surveillance-backend` GitHub repo. Render detects `render.yaml`
+   automatically.
+3. Render will prompt you for the env vars marked `sync: false` in
+   `render.yaml` — these are the secrets/project-specific values it can't
+   read from the repo (and shouldn't: `.env` is gitignored on purpose).
+   Fill in the same values you have locally in `.env`:
+   `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME` (the shared
+   Supabase project's pooler connection details),
+   `SUPABASE_JWT_SECRET`, `RAG_SERVICE_URL` (leave blank for now — `/search`
+   falls back to its mock response until this is set, same as local dev),
+   and `CORS_ORIGINS` (the frontend's deployed URL, once they have one;
+   `http://localhost:3000` won't work for a deployed frontend talking to a
+   deployed backend).
+4. Deploy. Render runs `alembic upgrade head` before starting the server
+   on every deploy (see `startCommand` in `render.yaml`) — safe to leave
+   as-is, since re-running already-applied migrations is a no-op.
+5. `GET https://<your-service>.onrender.com/health` should return
+   `{"status": "ok"}` once it's up. Share the base URL with the frontend
+   team so they can stop pointing at `localhost`.
+
+Render's free tier spins the service down after inactivity and takes
+~30-60s to wake back up on the next request — fine for this stage of the
+project, but worth knowing if a demo's first request looks slow.
+
 ## What's next
 
 1. Confirm the RAG contract with Abhishek — specifically, whether each of
