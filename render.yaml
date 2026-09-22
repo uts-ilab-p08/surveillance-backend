@@ -35,7 +35,7 @@ services:
         sync: false
       - key: DB_NAME
         sync: false
-      - key: SUPABASE_JWT_SECRET
+      - key: SUPABASE_URL
         sync: false
       - key: RAG_SERVICE_URL
         sync: false

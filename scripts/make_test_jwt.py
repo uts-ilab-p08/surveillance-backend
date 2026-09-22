@@ -4,10 +4,13 @@ this backend's authenticated routes before real Supabase project access
 (and the real SUPABASE_JWT_SECRET) is available.
 
 This does NOT talk to Supabase at all — it just signs a token with the same
-shape Supabase's own JWTs have (sub / aud / exp claims, HS256), using
-whatever SUPABASE_JWT_SECRET is currently in your local .env. app/api/deps.py
-verifies tokens the same way regardless of who signed them, so as long as
-both sides use the same secret, this backend can't tell the difference.
+shape Supabase's own JWTs have (sub / aud / exp claims), using HS256 and
+whatever LOCAL_DEV_JWT_SECRET is currently in your local .env. This only
+works when SUPABASE_URL is UNSET in your .env: app/api/deps.py verifies
+tokens against Supabase's real JWKS endpoint (ES256) whenever SUPABASE_URL
+is configured, and only falls back to this local HS256 secret when it
+isn't — see that file's docstring for why (Supabase now signs real tokens
+with an asymmetric key, not a shared secret).
 
 IMPORTANT: this only works against your LOCAL docker-compose Postgres,
 which has a stub auth.users row seeded by db-init/001_stub_supabase_auth.sql
@@ -54,7 +57,7 @@ def main() -> None:
         "iat": now,
         "exp": now + args.expires_in,
     }
-    token = jwt.encode(payload, settings.supabase_jwt_secret, algorithm="HS256")
+    token = jwt.encode(payload, settings.local_dev_jwt_secret, algorithm="HS256")
 
     print(token)
     print()

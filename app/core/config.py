@@ -53,13 +53,25 @@ class Settings(BaseSettings):
 
     # Auth — identity lives entirely in Supabase Auth (GoTrue), not this
     # backend. The frontend logs users in directly against Supabase and
-    # sends the resulting JWT as "Authorization: Bearer <token>"; this
-    # backend only verifies that token's signature/expiry and reads the
-    # user id out of its "sub" claim (see app/api/deps.py). There is no
-    # /auth/register or /auth/login here and no local password storage —
-    # Supabase's dashboard (Project Settings -> API -> JWT Secret) has this
-    # value.
-    supabase_jwt_secret: str = "change-me-in-production"
+    # sends the resulting JWT as "Authorization: Bearer <token>". This
+    # project's Supabase Auth already runs on asymmetric JWT Signing Keys
+    # (ES256), not the older single shared secret, so this backend verifies
+    # tokens against Supabase's own public JWKS endpoint
+    # (supabase_url + "/auth/v1/.well-known/jwks.json") rather than a
+    # secret it has to be handed — see app/api/deps.py and
+    # https://supabase.com/docs/guides/auth/signing-keys. supabase_url is
+    # the project's base URL (Project Settings -> General -> Project URL),
+    # e.g. "https://<project-ref>.supabase.co" — not a secret itself.
+    supabase_url: str | None = None
+
+    # LOCAL DEVELOPMENT ONLY — never set in staging/prod, never derived from
+    # anything in the real Supabase project. When supabase_url isn't set,
+    # app/api/deps.py falls back to verifying tokens signed with this
+    # shared HS256 secret instead of doing a real JWKS lookup, so
+    # scripts/make_test_jwt.py can mint a usable token without needing
+    # Supabase project access. Completely unrelated to Supabase's own
+    # (now-legacy) HS256 shared secret — don't confuse the two.
+    local_dev_jwt_secret: str = "change-me-for-local-dev-only"
 
     # RAG / vector search + LLM: GET /search calls {rag_service_url}/query.
     # Left unset in dev -> app/services/rag_client.py returns a canned mock

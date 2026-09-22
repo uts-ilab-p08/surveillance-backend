@@ -49,9 +49,23 @@ There is no local `users` table, no password hashing, and no
 entirely Supabase Auth's: the frontend authenticates users directly
 against Supabase (client SDK or REST API), and every request to this API
 carries the resulting session token as `Authorization: Bearer <token>`.
-`app/api/deps.py` verifies that JWT (HS256, `sub` claim, audience
-`authenticated`) using `SUPABASE_JWT_SECRET` and resolves a lightweight
-`CurrentUser` from it — no DB round-trip needed to know who's asking.
+
+This project's Supabase Auth runs on asymmetric JWT Signing Keys (ES256),
+not the older single shared secret — confirmed in the dashboard under
+JWT Keys -> JWT Signing Keys (current key: ECC P-256; the old HS256
+shared secret shows up there only as a "previous key", kept around to
+verify tokens issued before the project migrated). So `app/api/deps.py`
+verifies real tokens against Supabase's own public JWKS endpoint
+(`SUPABASE_URL` + `/auth/v1/.well-known/jwks.json`) rather than a secret
+at all — there's nothing sensitive to be handed for this to work, just
+the project's base URL. See
+[Supabase's JWT Signing Keys docs](https://supabase.com/docs/guides/auth/signing-keys).
+
+When `SUPABASE_URL` isn't set (e.g. no real Supabase project access yet),
+`app/api/deps.py` falls back to verifying an HS256 token signed with
+`LOCAL_DEV_JWT_SECRET` instead — see "Local testing" below. That fallback
+secret is local-only and unrelated to anything in the real Supabase
+project; it's never used once `SUPABASE_URL` is set.
 
 `saved_queries.user_id` and `recent_queries.user_id` are foreign keys
 straight to Supabase's own `auth.users(id)` — a table this backend doesn't
@@ -67,8 +81,8 @@ table and code path are gone (see the `e362816aec7f` migration).
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# fill in SUPABASE_JWT_SECRET from the Supabase dashboard ->
-# Project Settings -> API -> JWT Secret
+# fill in SUPABASE_URL from the Supabase dashboard ->
+# Project Settings -> General -> Project URL
 
 # local Postgres (dev only — in staging/prod the DB_* fields in .env
 # point at the shared Supabase project instead)
@@ -160,7 +174,7 @@ app/
                           the RAG contract, clip.py — the frontend's Clip
                           shape)
   api/
-    deps.py               Supabase JWT verification dependency
+    deps.py               Supabase JWT verification dependency (JWKS/ES256, with a local-only HS256 fallback)
     routes/               search, clips, cameras, queries, health
   services/
     rag_client.py            HTTP client -> RAG repo
@@ -182,9 +196,10 @@ You don't need Supabase project access to develop against this backend.
 into your local docker-compose Postgres on first startup, including one
 test user (`00000000-0000-0000-0000-000000000001`). `scripts/make_test_jwt.py`
 mints a fake-but-correctly-shaped Supabase JWT for that user, signed with
-whatever `SUPABASE_JWT_SECRET` is in your local `.env` — app/api/deps.py
-can't tell it apart from a real one, since verification only checks the
-signature and claims, not who issued it.
+`LOCAL_DEV_JWT_SECRET` from your local `.env`. This only works while
+`SUPABASE_URL` is unset — once it's set, app/api/deps.py verifies real
+tokens against Supabase's own JWKS endpoint instead (see "Auth" above),
+and this local fallback path is never used.
 
 ```bash
 docker compose up -d      # first run seeds the auth.users stub automatically
@@ -240,7 +255,8 @@ service instead of you clicking through settings by hand. One-time setup:
    Fill in the same values you have locally in `.env`:
    `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME` (the shared
    Supabase project's pooler connection details),
-   `SUPABASE_JWT_SECRET`, `RAG_SERVICE_URL` (leave blank for now — `/search`
+   `SUPABASE_URL` (the project's base URL — not a secret, see "Auth" above),
+   `RAG_SERVICE_URL` (leave blank for now — `/search`
    falls back to its mock response until this is set, same as local dev),
    and `CORS_ORIGINS` (the frontend's deployed URL, once they have one;
    `http://localhost:3000` won't work for a deployed frontend talking to a
