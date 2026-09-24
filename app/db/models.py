@@ -15,11 +15,22 @@ store or search video data itself.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+# Stub of Supabase's auth.users so the ORM can resolve ForeignKey("auth.users.id")
+# at flush time. Only the PK is declared; Supabase owns the real table, and
+# alembic/env.py excludes it from autogenerate so no migration ever touches it.
+auth_users = Table(
+    "users",
+    Base.metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    schema="auth",
+    info={"external": True},
+)
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
