@@ -65,7 +65,13 @@ def _decode(token: str) -> dict:
 
     if settings.supabase_url:
         signing_key = _jwks_client().get_signing_key_from_jwt(token)
-        return jwt.decode(token, signing_key.key, algorithms=["ES256"], audience=AUDIENCE)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["ES256"],
+            audience=AUDIENCE,
+            issuer=f"{settings.supabase_url.rstrip('/')}/auth/v1",
+        )
 
     # Local dev fallback — see module docstring. Never reached once
     # SUPABASE_URL is configured.
