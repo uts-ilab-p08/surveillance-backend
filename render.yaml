@@ -37,5 +37,25 @@ services:
         sync: false
       - key: SUPABASE_URL
         sync: false
-      - key: RAG_SERVICE_URL
+      # Read directly by the in-process RAG package (ilabs-cctv-rag), not by
+      # app.core.config. QDRANT_URL must point at a remote Qdrant: left
+      # empty, the package falls back to an embedded ./qdrant_data store,
+      # which Render's ephemeral disk wipes on every deploy.
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_SCHEMA
+        value: bronze
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: meva_events
+      - key: EMBED_MODEL
+        value: BAAI/bge-base-en-v1.5
+      - key: EMBED_DIM
+        value: "768"
+      - key: LLM_PROVIDER
+        sync: false
+      - key: LLM_API_KEY
         sync: false

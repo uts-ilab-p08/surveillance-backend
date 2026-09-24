@@ -9,15 +9,16 @@ class RagResultItem(BaseModel):
     # this backend doesn't mint or store video IDs itself.
     video_id: str
     video_url: str | None = None  # public R2 playback URL, when available
-    start_seconds: float
-    end_seconds: float
-    caption: str
+    # Nullable in bronze.events, and passed through as-is by the RAG package.
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    caption: str  # event description, falling back to event_name
     score: float  # confidence, 0-1
 
 
 class RagQueryResult(BaseModel):
-    """Shape returned by the RAG service — also what GET /search returns
-    to the frontend, unmodified (the backend is a thin pass-through here)."""
+    """What GET /search returns to the frontend — mapped from the RAG
+    package's answer_query() response by app/services/rag_client.py."""
 
     answer: str
     results: list[RagResultItem] = []

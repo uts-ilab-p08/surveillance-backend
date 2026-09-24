@@ -73,10 +73,9 @@ class Settings(BaseSettings):
     # (now-legacy) HS256 shared secret — don't confuse the two.
     local_dev_jwt_secret: str = "change-me-for-local-dev-only"
 
-    # RAG / vector search + LLM: GET /search calls {rag_service_url}/query.
-    # Left unset in dev -> app/services/rag_client.py returns a canned mock
-    # response so /search is exercisable before that repo exists.
-    rag_service_url: str | None = None
+    # RAG / vector search: GET /search calls the in-process `rag` package,
+    # which reads its own env vars (DATABASE_URL, QDRANT_URL, ...) directly
+    # from os.environ rather than from here — see app/services/rag_client.py.
 
     @property
     def cors_origin_list(self) -> list[str]:

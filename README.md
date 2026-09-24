@@ -3,8 +3,8 @@
 This is the FastAPI service behind the Interactive Surveillance Video
 Querying project. The product flow is: a user logs in via Supabase Auth on
 the frontend, types a natural-language query, and this backend verifies
-their session, forwards the query to the RAG service, and whatever RAG
-sends back — the top handful of matching video clips, each with a
+their session, hands the query to the RAG package, and whatever RAG
+returns — the top handful of matching video clips, each with a
 relevance score — goes straight to the frontend. This repo owns the
 search relay and the read-only clip/camera/query-history layer around it.
 It does **not** own user identity — see "Auth" below.
@@ -37,10 +37,9 @@ data of its own to manage.
   users in directly against Supabase; this backend only verifies the JWT
   it issues.
 
-The RAG integration works without that service running: leave
-`RAG_SERVICE_URL` unset and `/search` falls back to a mock response.
-Useful for developing or demoing this repo on its own — flip the URL on
-once RAG is up, no code changes needed.
+RAG runs in-process, as a pip dependency (the `ilabs-cctv-rag` package,
+imported as `rag`) — not as a separate service. How to install, configure,
+upgrade and debug it: "Talking to the RAG repo" below.
 
 ## Auth
 
@@ -104,7 +103,7 @@ Supabase REST API directly, for manual testing) and pass it as
 
 | Endpoint | What it does |
 |---|---|
-| `GET /search` | Forwards a natural-language query to the RAG service. **Not yet updated for the real RAG contract** — still returns RAG's raw `answer`/`sources` reshaped a bit, not the full `Clip[]` the frontend spec expects. Blocked on confirming the RAG response shape (see "Talking to the RAG repo"). |
+| `GET /search` | Runs a natural-language query through the RAG package (`rag.pipeline.answer_query`) and returns its `answer` plus up to `limit` matches (RAG itself returns at most 5). **Not yet the full `Clip[]` the frontend spec expects** — see "Talking to the RAG repo". |
 | `GET /clips/{id}` | Fetches one clip directly from the annotation team's `bronze` schema, by `event_id`. Independent of the RAG contract — built and working. |
 | `GET /clips/{id}/related` | Nearby clips on the same camera, closest in time first (our own heuristic — the frontend contract doesn't specify one). |
 | `GET /cameras` | The Cameras Directory modal — camera code, scene, and event count, aggregated from `bronze`. |
@@ -132,32 +131,153 @@ upload and the annotation hand-off (`POST /videos/upload`, `POST
 
 ## Talking to the RAG repo
 
-This one contract is the entire coupling between this repo and the RAG
-repo — and it's also the whole product's search path (user query -> this
-endpoint -> RAG -> top-K videos with relevance scores -> frontend). If
-the shape needs to change, it's a conversation with that team first.
+The backend talks to RAG **through a Python package, not over HTTP**. The
+RAG team's repo
+([uts-ilab-p08/iLabs-capstone-rag](https://github.com/uts-ilab-p08/iLabs-capstone-rag))
+is installed as a regular pip dependency and called in-process — there is
+no separate RAG service to deploy, and no URL to configure.
 
-**RAG service** (`app/services/rag_client.py`):
 ```
-Backend -> POST {RAG_SERVICE_URL}/query
-           {"query": "...", "limit": 10}
-RAG     -> 200 {"answer": "...",
-                "results": [{"video_id": "<bronze video_id, a sha256 hex
-                              string — not a UUID>",
-                             "video_url": "<public R2 URL, if available>",
-                             "start_seconds": 0.0, "end_seconds": 10.0,
-                             "caption": "...", "score": 0.83}, ...]}
+GET /search?q=...                       (app/api/routes/search.py)
+  -> rag_client.query(q, limit)         (app/services/rag_client.py — adapter)
+    -> rag.pipeline.answer_query(q)     (the package, same process)
+      -> fastembed: embed the query     (model weights cached on disk)
+      -> Qdrant: nearest events         (remote cluster, QDRANT_URL)
+    <- {"query", "answer", "sources"}
+  <- RagQueryResult {"answer", "results"}  -> frontend
 ```
 
-The corresponding schema lives in `app/schemas/rag.py`
-(`RagQueryResult`), so a shape change is a one-file diff on this side.
-Open question with Abhishek (RAG): whether each result also includes
-`event_id`, not just `video_id` — without it, this backend can't reliably
-resolve which event in a multi-event video matched (see
-`app/services/bronze.py`'s four-hop bronze traversal). Also confirmed:
-RAG owns the full user-facing answer text; this backend's own LLM usage,
-if any, is scoped to the separate `/assistant/*` endpoints only, not
-`/search`.
+This one function call is the entire coupling between the two repos — and
+it's also the whole product's search path. If the shape needs to change,
+it's a conversation with the RAG team first.
+
+### Installing it
+
+`requirements.txt` pins the package to a git tag:
+
+```
+ilabs-cctv-rag @ git+https://github.com/uts-ilab-p08/iLabs-capstone-rag.git@vX.Y.Z
+```
+
+- **Distribution name** (what pip sees): `ilabs-cctv-rag`.
+  **Module name** (what Python imports): `rag`. Import `rag.pipeline`,
+  never `ilabs_cctv_rag`.
+- The repo is public, so `pip install -r requirements.txt` works locally
+  and on Render with no GitHub credentials.
+- pip builds the package from the tagged commit itself (there's no PyPI
+  release), so the installed code is exactly what that tag points at.
+
+Check the install worked:
+
+```bash
+DATABASE_URL=postgresql://x:y@localhost/z \
+  python -c "from rag.pipeline import answer_query; print('RAG package OK')"
+```
+
+(`DATABASE_URL` only has to be *set* for this check — the package reads it
+at import time.)
+
+**Working on RAG and the backend together:** clone the RAG repo next to
+this one and install it editable, so changes there show up here without
+publishing a tag:
+
+```bash
+pip install -e ../iLabs-capstone-rag
+```
+
+Run `pip install -r requirements.txt` again to go back to the pinned tag.
+
+### Configuring it
+
+The package reads its **own** settings straight from the process
+environment (it calls `load_dotenv()`, so a local `.env` works too) — not
+from `app/core/config.py`. Set these next to the backend's own vars:
+
+| Variable | Example | Notes |
+|---|---|---|
+| `DATABASE_URL` | `postgresql://USER:PASSWORD@HOST:5432/postgres` | Supabase connection string. **Required** — the package fails to import without it |
+| `DB_SCHEMA` | `bronze` | Schema holding the annotation team's events/videos |
+| `QDRANT_URL` | `https://<cluster>.qdrant.cloud` | **Must be set outside local dev.** Empty = embedded `./qdrant_data`, which Render wipes on every deploy |
+| `QDRANT_API_KEY` | | Qdrant Cloud API key |
+| `QDRANT_COLLECTION` | `meva_events` | |
+| `EMBED_MODEL` | `BAAI/bge-base-en-v1.5` | Must match the model the collection was indexed with |
+| `EMBED_DIM` | `768` | Must match `EMBED_MODEL` |
+| `LLM_PROVIDER`, `LLM_API_KEY` | | Unused until RAG picks an LLM; can stay empty |
+
+`DATABASE_URL` overlaps with this backend's own `DB_*` fields (same
+Supabase project), but they're read independently — set both. Never commit
+real values: `.env` stays gitignored, and on Render they go in the service's
+Environment tab (see `render.yaml`).
+
+### What the backend gets back
+
+```
+from rag.pipeline import answer_query
+answer_query("...") -> {"query": "...", "answer": "...",
+                        "sources": [{"video_id": "<bronze video_id, a sha256
+                                      hex string — not a UUID>",
+                                     "video_url": "<public R2 URL> | null",
+                                     "start_seconds": 0.0 | null,
+                                     "end_seconds": 10.0 | null,
+                                     "description": "..." | null,
+                                     "event_name": "...", "camera_id": "...",
+                                     "score": 0.83, ...}, ...]}
+```
+
+`rag_client.py` is the only file that knows this shape. It maps it onto
+`RagQueryResult` (`app/schemas/rag.py`) so the frontend contract doesn't
+move when RAG's does:
+
+- `description` -> `caption`, falling back to `event_name` when null.
+- `start_seconds` / `end_seconds` pass through and **can be null**.
+- RAG returns at most 5 sources; `/search`'s `limit` can only trim that.
+- Any exception from the package (Qdrant down, bad credentials, ...) ->
+  **502** "Search service unreachable".
+- Package not configured (`DATABASE_URL` missing) -> a mock answer in
+  `ENVIRONMENT=development`, a **502** everywhere else — so a misconfigured
+  deploy fails loudly instead of serving fake results.
+
+The import is deferred to the first `/search` call on purpose: a missing
+RAG env var must only break `/search`, not the whole API.
+
+### Before it can answer anything: indexing
+
+`/search` only queries the Qdrant collection; it never builds it. Run the
+RAG repo's `scripts/index_events.py` **once** against the remote Qdrant (or
+as a separate job) whenever bronze data changes — never on web server
+startup. Until then `/search` answers "No matching footage was found".
+
+### Upgrading to a new RAG version
+
+1. The RAG team publishes a new tag (see the RAG repo's README).
+2. Bump the tag in `requirements.txt` (e.g. `@v0.1.2` -> `@v0.1.3`) and run
+   `pip install -r requirements.txt`.
+3. Run the install check above, then `pytest tests/ -q`.
+4. If the release changed `EMBED_MODEL`/`EMBED_DIM` or what gets indexed,
+   the collection must be re-indexed **before** this bump is deployed, and
+   the env vars updated to match.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `pip install` fails with `Expected a Python module at: src/ilabs_cctv_rag/__init__.py` | The pinned tag predates the RAG repo's packaging fix (`module-name = "rag"` in its `pyproject.toml`). Pin a tag that includes it |
+| `ModuleNotFoundError: No module named 'ilabs_cctv_rag'` | Import `rag`, not the distribution name |
+| pip reports a `psycopg` conflict | The package needs `psycopg[binary]>=3.3.5`; keep this repo's pin at or above it |
+| `/search` returns a `[mock — ...]` answer | `DATABASE_URL` isn't set in this process (development only) |
+| `/search` returns 502 | Read the `detail`: usually a missing env var outside development, or Qdrant unreachable/wrong API key |
+| First `/search` after a deploy takes ~30 s | fastembed downloads the model weights (~130 MB) on first use |
+| Render restarts the service on the first `/search` | Out of memory: the embedding model needs ~700 MB, more than the free plan's 512 MB |
+
+### Open questions with the RAG team
+
+- Whether each result also includes `event_id`, not just `video_id` —
+  without it, this backend can't reliably resolve which event in a
+  multi-event video matched (see `app/services/bronze.py`'s four-hop bronze
+  traversal).
+- Already settled: RAG owns the full user-facing answer text; this
+  backend's own LLM usage, if any, is scoped to the separate
+  `/assistant/*` endpoints only, not `/search`.
 
 ## Project layout
 
@@ -177,7 +297,7 @@ app/
     deps.py               Supabase JWT verification dependency (JWKS/ES256, with a local-only HS256 fallback)
     routes/               search, clips, cameras, queries, health
   services/
-    rag_client.py            HTTP client -> RAG repo
+    rag_client.py            Adapter over the in-process RAG package
     bronze.py                Read-only queries over the annotation team's
                               bronze schema
     clip_builder.py           Builds the frontend's Clip shape from a
@@ -232,7 +352,7 @@ uvicorn app.main:app --reload &
 TOKEN="<a Supabase-issued JWT, e.g. from logging in on the frontend>"
 AUTH="-H \"Authorization: Bearer $TOKEN\""
 
-# search (mocked until RAG_SERVICE_URL is set)
+# search (mocked in development until DATABASE_URL is set)
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8000/api/v1/search?q=did+anyone+enter+the+building"
 
@@ -256,8 +376,11 @@ service instead of you clicking through settings by hand. One-time setup:
    `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME` (the shared
    Supabase project's pooler connection details),
    `SUPABASE_URL` (the project's base URL — not a secret, see "Auth" above),
-   `RAG_SERVICE_URL` (leave blank for now — `/search`
-   falls back to its mock response until this is set, same as local dev),
+   the RAG package's vars (`DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`,
+   `LLM_PROVIDER`, `LLM_API_KEY`; the non-secret ones have defaults in
+   `render.yaml`). `QDRANT_URL` must point at a remote Qdrant — left empty,
+   the package uses an embedded `./qdrant_data` store that Render's
+   ephemeral disk wipes on every deploy,
    and `CORS_ORIGINS` (the frontend's deployed URL, once they have one;
    `http://localhost:3000` won't work for a deployed frontend talking to a
    deployed backend).

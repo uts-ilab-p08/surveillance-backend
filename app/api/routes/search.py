@@ -15,9 +15,9 @@ def search(
 ) -> RagQueryResult:
     """
     Diagram's "GET /search — NL query via RAG". The backend does no
-    retrieval or LLM work itself — it forwards the query to the RAG
-    service (vector search + LLM answer generation live there) and passes
-    the response straight through.
+    retrieval or LLM work itself — it hands the query to the RAG package
+    (vector search + answer generation live there, see
+    app/services/rag_client.py) and returns its answer.
     """
     try:
         return rag_query(q, limit=limit)
