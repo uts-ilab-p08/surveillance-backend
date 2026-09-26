@@ -116,11 +116,15 @@ def get_camera_directory(db: Session) -> list[dict]:
 
 
 _VIDEO_DIMENSIONS_SQL = text("""
-    SELECT frame_width, frame_height FROM bronze.videos WHERE video_id = :video_id
+    SELECT frame_width, frame_height, duration_seconds
+    FROM bronze.videos WHERE video_id = :video_id
 """)
 
 
 def get_video_dimensions(db: Session, video_id: str) -> dict | None:
+    """Despite the name, also carries duration_seconds — used by GET
+    /videos/{video_id}/tracks to validate the requested start_seconds/
+    end_seconds window actually falls within the real video length."""
     row = db.execute(_VIDEO_DIMENSIONS_SQL, {"video_id": video_id}).mappings().first()
     return dict(row) if row else None
 

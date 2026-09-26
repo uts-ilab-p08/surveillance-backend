@@ -28,6 +28,13 @@ def get_video_tracks(
     if dimensions is None:
         raise HTTPException(status_code=404, detail="Unknown video_id")
 
+    duration_seconds = dimensions.get("duration_seconds")
+    if duration_seconds is not None and (start_seconds > duration_seconds or end_seconds > duration_seconds):
+        raise HTTPException(
+            status_code=422,
+            detail=f"start_seconds/end_seconds must fall within the video's duration ({duration_seconds}s)",
+        )
+
     rows = bronze.get_track_geometries(db, video_id, start_seconds, end_seconds, event_id)
     objects = build_tracks(rows)
 
