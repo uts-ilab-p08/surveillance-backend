@@ -1,51 +1,76 @@
 """
-HTTP client for the RAG repo (vector DB + LLM, a separate service/repo
-owned by teammates). The backend never talks to a vector store or an LLM
-SDK directly; it forwards the natural-language query and returns whatever
-that service answers — this is the entire product's search path: user
-query -> this endpoint -> RAG -> top-K videos with confidence scores ->
-straight back to the frontend.
+In-process client for the RAG package (vector search + LLM answer
+generation), replacing the earlier plan of calling a separate RAG
+service over HTTP — see the RAG repo's README, "Using it from the
+backend": `from rag.pipeline import answer_query`.
 
-Contract with that service (align on this with the RAG team):
-  Backend -> POST {RAG_SERVICE_URL}/query
-             {"query": "...", "limit": 10}
-  Service -> 200 {"answer": "...",
-                  "results": [{"video_id": "<bronze video_id, a sha256 hex
-                                string>", "video_url": "<public R2 URL, if
-                                available>", "start_seconds": 0.0,
-                                "end_seconds": 10.0, "caption": "...",
-                                "score": 0.83}, ...]}
-
-If RAG_SERVICE_URL isn't set (e.g. local dev before that repo/service
-exists), query() returns a canned mock response so GET /search is
-exercisable end-to-end before the sibling service is up.
+The package's answer_query() deliberately returns only
+{score, annotation, video_id, event_id} per source — camera, scene,
+timestamps and video_url are NOT included on purpose (see that repo's
+pipeline.py: "the backend just does not need them: it looks the rest up
+in Postgres by event_id"). This module does exactly that lookup, reusing
+app/services/bronze.py the same way app/services/clip_builder.py already
+does for GET /clips/{id}.
 """
-import httpx
+from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.schemas.rag import RagQueryResult
+from app.schemas.rag import RagQueryResult, RagResultItem
+from app.services import bronze
 
 
 class RagServiceUnavailable(Exception):
     pass
 
 
-def query(query_text: str, limit: int = 10) -> RagQueryResult:
-    settings = get_settings()
+def _load_answer_query():
+    # Imported lazily (not at module load time) so that a process which
+    # never calls /search doesn't pay the RAG package's import cost
+    # (embedding model, Qdrant client) at startup, and so that a missing
+    # or invalid env var surfaces here as RagServiceUnavailable rather
+    # than crashing the whole app at boot.
+    from rag.pipeline import answer_query
 
-    if not settings.rag_service_url:
-        return RagQueryResult(
-            answer=f"[mock — RAG_SERVICE_URL not configured] No live search backend for: {query_text!r}",
-            results=[],
-        )
+    return answer_query
+
+
+def _to_item(db: Session, source: dict) -> RagResultItem | None:
+    """One RAG source -> one RagResultItem, enriched from bronze.
+
+    Returns None if the event_id RAG returned no longer exists in bronze
+    (index/DB drift) — the caller drops those rather than returning a
+    result the frontend can't play.
+    """
+    event = bronze.get_event_with_video(db, source["event_id"])
+    if event is None:
+        return None
+
+    return RagResultItem(
+        video_id=event["video_id"],
+        video_url=event["video_url"],
+        start_seconds=event["start_seconds"] or 0.0,
+        end_seconds=event["end_seconds"] or 0.0,
+        # RAG's "annotation" is bronze's events.description under a
+        # different name (see that repo's README) — prefer it, since
+        # it's exactly what was embedded/matched against, but fall back
+        # to a fresh bronze read if it's ever missing.
+        caption=source.get("annotation") or event["description"] or event["event_name"] or "",
+        score=source["score"],
+    )
+
+
+def query(db: Session, query_text: str, limit: int = 10) -> RagQueryResult:
+    try:
+        answer_query = _load_answer_query()
+    except Exception as exc:  # package missing, or a required env var absent
+        raise RagServiceUnavailable(f"RAG package not available: {exc}") from exc
 
     try:
-        resp = httpx.post(
-            f"{settings.rag_service_url}/query",
-            json={"query": query_text, "limit": limit},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        return RagQueryResult.model_validate(resp.json())
-    except httpx.HTTPError as exc:
+        response = answer_query(query_text)
+    except Exception as exc:  # Qdrant unreachable, embedding failure, etc.
         raise RagServiceUnavailable(str(exc)) from exc
+
+    items = [_to_item(db, s) for s in response["sources"][:limit]]
+    return RagQueryResult(
+        answer=response["answer"],
+        results=[item for item in items if item is not None],
+    )

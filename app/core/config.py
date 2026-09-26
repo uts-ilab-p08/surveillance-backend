@@ -73,10 +73,14 @@ class Settings(BaseSettings):
     # (now-legacy) HS256 shared secret — don't confuse the two.
     local_dev_jwt_secret: str = "change-me-for-local-dev-only"
 
-    # RAG / vector search + LLM: GET /search calls {rag_service_url}/query.
-    # Left unset in dev -> app/services/rag_client.py returns a canned mock
-    # response so /search is exercisable before that repo exists.
-    rag_service_url: str | None = None
+    # RAG / vector search + LLM: GET /search calls the ilabs-cctv-rag
+    # package in-process (see app/services/rag_client.py), not an HTTP
+    # service. That package reads its own config directly from the
+    # environment (QDRANT_URL, QDRANT_API_KEY, QDRANT_COLLECTION,
+    # EMBED_MODEL, EMBED_DIM, LLM_BASE_URL, LLM_MODEL, LLM_API_KEY,
+    # DATABASE_URL, DB_SCHEMA — see that repo's rag/config.py), so those
+    # vars belong in this backend's .env / Render env for the package to
+    # pick up, but are deliberately not duplicated as Settings fields here.
 
     @property
     def cors_origin_list(self) -> list[str]:
