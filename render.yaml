@@ -37,5 +37,30 @@ services:
         sync: false
       - key: SUPABASE_URL
         sync: false
-      - key: RAG_SERVICE_URL
+      # RAG (ilabs-cctv-rag package, imported in-process — see
+      # app/services/rag_client.py). Read directly by that package's own
+      # rag/config.py, not by this backend's Settings class — still
+      # listed here since Render needs them in the environment either
+      # way. QDRANT_URL in particular must be a real value in production:
+      # left blank, the package silently falls back to an embedded local
+      # Qdrant index, which Render's ephemeral disk wipes on every deploy.
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_SCHEMA
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        sync: false
+      - key: EMBED_MODEL
+        sync: false
+      - key: EMBED_DIM
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_API_KEY
         sync: false
