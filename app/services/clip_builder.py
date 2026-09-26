@@ -65,6 +65,7 @@ def build_clip(
         tags=derive_tags(object_types, event["event_name"]),
         objects=event["description"] or "",
         action=event["event_name"] or "",
+        scene=event.get("scene"),
         thumbnailUrl=None,  # not yet produced anywhere upstream — see README
         videoUrl=event["video_url"],
     )

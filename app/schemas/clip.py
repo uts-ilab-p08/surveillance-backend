@@ -26,6 +26,7 @@ class Clip(BaseModel):
     camera: str
     code: str
     perspective: str
+    scene: str | None = None  # frontend spec §5.2 — bronze.videos.scene
     ts: str  # "HH:MM:SS" — time of day the clip starts
     date: str  # e.g. "Aug 4"
     order: int  # chronological position within the response's clip list
@@ -40,11 +41,23 @@ class Clip(BaseModel):
     video_url: str | None = Field(default=None, alias="videoUrl")
 
 
+class ClipListResponse(BaseModel):
+    """§5.2 — GET /clips/{id}/related's envelope."""
+
+    clips: list[Clip]
+
+
 class RecentQueryOut(BaseModel):
     id: str
     text: str
     ts: str  # ISO timestamp string
     cameras: int
+
+
+class RecentQueriesResponse(BaseModel):
+    """§5.2 — GET /queries/recent's envelope."""
+
+    queries: list[RecentQueryOut]
 
 
 class SavedQueryOut(BaseModel):
@@ -54,6 +67,12 @@ class SavedQueryOut(BaseModel):
     text: str
     saved_on: str = Field(alias="savedOn")  # ISO timestamp string
     hits: int
+
+
+class SavedQueriesResponse(BaseModel):
+    """§5.2 — GET /queries/saved's envelope."""
+
+    queries: list[SavedQueryOut]
 
 
 class SavedQueryCreate(BaseModel):
@@ -66,3 +85,10 @@ class CameraDirectoryEntry(BaseModel):
     code: str
     perspective: str
     event_count: int = Field(alias="eventCount")
+    scene: str | None = None  # frontend spec §5.2 — bronze.videos.scene
+
+
+class CamerasResponse(BaseModel):
+    """§5.2 — GET /cameras's envelope."""
+
+    cameras: list[CameraDirectoryEntry]

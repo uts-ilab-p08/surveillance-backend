@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_user
 from app.db.session import get_db
-from app.schemas.clip import Clip
+from app.schemas.clip import Clip, ClipListResponse
 from app.services import bronze
 from app.services.clip_builder import build_clip
 
@@ -25,7 +25,7 @@ def get_clip(
     return build_clip(db, event, order=0)
 
 
-@router.get("/clips/{id}/related")
+@router.get("/clips/{id}/related", response_model=ClipListResponse)
 def get_related_clips(
     id: str,
     limit: int = Query(default=4, ge=1, le=20),
@@ -40,4 +40,4 @@ def get_related_clips(
         raise HTTPException(status_code=404, detail="Clip not found")
     related = bronze.get_related_events(db, anchor, limit=limit)
     clips = [build_clip(db, event, order=index) for index, event in enumerate(related)]
-    return {"clips": clips}
+    return ClipListResponse(clips=clips)
