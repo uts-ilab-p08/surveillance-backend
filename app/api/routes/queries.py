@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,17 +21,18 @@ router = APIRouter(tags=["queries"])
 
 @router.get("/queries/recent", response_model=RecentQueriesResponse)
 def get_recent_queries(
+    limit: int = Query(default=20, ge=1, le=100, description="Newest N rows — Home asks for 3"),
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """§3 — Home screen's "Recent Queries" list. Read-only here by design:
-    rows are written only as a side effect of POST /search (once that's
-    wired up to RAG — see README), never created directly."""
+    rows are written only as a side effect of GET /search, never created
+    directly."""
     rows = (
         db.query(RecentQuery)
         .filter(RecentQuery.user_id == user.id)
         .order_by(RecentQuery.created_at.desc())
-        .limit(20)
+        .limit(limit)
         .all()
     )
     queries = [

@@ -139,3 +139,44 @@ def test_save_query_falls_back_to_existing_row_on_integrity_error_race():
     assert resp.status_code == 200
     assert resp.json()["hits"] == 1
     mock_db.rollback.assert_called_once()
+
+
+# --- GET /queries/recent ?limit ---------------------------------------------
+
+
+def _recent_row(text="car parked"):
+    return MagicMock(id=uuid.uuid4(), query_text=text, created_at=datetime.now(timezone.utc), camera_count=2)
+
+
+def _recent_query_chain(mock_db):
+    return mock_db.query.return_value.filter.return_value.order_by.return_value.limit
+
+
+def test_recent_queries_passes_limit_through_to_the_query():
+    mock_db = MagicMock()
+    _recent_query_chain(mock_db).return_value.all.return_value = [_recent_row() for _ in range(3)]
+    _override_db(mock_db)
+
+    resp = client.get("/api/v1/queries/recent", params={"limit": 3})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["queries"]) == 3
+    _recent_query_chain(mock_db).assert_called_once_with(3)
+
+
+def test_recent_queries_defaults_to_20_when_limit_omitted():
+    mock_db = MagicMock()
+    _recent_query_chain(mock_db).return_value.all.return_value = []
+    _override_db(mock_db)
+
+    resp = client.get("/api/v1/queries/recent")
+
+    assert resp.status_code == 200
+    _recent_query_chain(mock_db).assert_called_once_with(20)
+
+
+@pytest.mark.parametrize("limit", [0, -1, 101])
+def test_recent_queries_rejects_out_of_range_limit(limit):
+    _override_db(MagicMock())
+    resp = client.get("/api/v1/queries/recent", params={"limit": limit})
+    assert resp.status_code == 422

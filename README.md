@@ -109,7 +109,7 @@ Supabase REST API directly, for manual testing) and pass it as
 | `GET /clips/{id}/related` | Nearby clips on the same camera, closest in time first (our own heuristic — the frontend contract doesn't specify one). |
 | `GET /clips/{id}/thumbnail.jpg` | One JPEG frame for the clip — the moment with the most detected objects, via `bronze.geometries`. Extracted in-process with PyAV on first request (~1-6s, network-bound against R2) and cached on local disk after that. **Public** (no Bearer token): it's loaded via `<img src>`, and the source MP4 is already public. `GET /search` fills each result's `thumbnail_url` with this route. |
 | `GET /cameras` | The Cameras Directory modal — camera code, scene, and event count, aggregated from `bronze`. |
-| `GET /queries/recent` | A user's recent searches. **Currently always empty** — nothing writes to it yet, since that write is a side effect of `POST /search`, which isn't wired to real RAG results yet either. |
+| `GET /queries/recent?limit=N` | A user's recent searches, newest first. `limit` defaults to 20 (1-100); Home asks for 3. Rows are written as a side effect of `GET /search`. |
 | `GET /queries/saved` | A user's bookmarked searches. |
 | `POST /queries/saved` | Bookmarks a query. `hits` starts at 0 and is meant to increment when that same query is re-run through `POST /search` — that increment logic isn't wired up yet (same blocker as above). |
 | `GET /health` | Plain liveness check, no auth — for uptime monitors and deploy platforms. |
