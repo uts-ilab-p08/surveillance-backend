@@ -65,6 +65,22 @@ _AVG_DETECTION_CONFIDENCE_SQL = text("""
 """)
 
 
+# The single most "populated" moment of an event — the timestamp with the
+# most detected objects (ties broken by confidence, then earliest) — used
+# to pick a representative thumbnail frame rather than a blind midpoint.
+_BEST_FRAME_SECONDS_SQL = text("""
+    SELECT g.timestamp_seconds
+    FROM bronze.events e
+    JOIN bronze.event_objects eo ON eo.event_id = e.event_id
+    JOIN bronze.geometries g ON g.object_id = eo.object_id
+    WHERE e.event_id = :event_id
+      AND g.timestamp_seconds BETWEEN e.start_seconds AND e.end_seconds
+    GROUP BY g.timestamp_seconds
+    ORDER BY COUNT(*) DESC, AVG(g.confidence) DESC, g.timestamp_seconds
+    LIMIT 1
+""")
+
+
 def get_event_with_video(db: Session, event_id: str) -> dict | None:
     row = db.execute(_EVENT_WITH_VIDEO_SQL, {"event_id": event_id}).mappings().first()
     return dict(row) if row else None
@@ -73,6 +89,11 @@ def get_event_with_video(db: Session, event_id: str) -> dict | None:
 def get_object_types_for_event(db: Session, event_id: str) -> list[str]:
     rows = db.execute(_OBJECT_TYPES_FOR_EVENT_SQL, {"event_id": event_id}).all()
     return [row[0] for row in rows]
+
+
+def get_best_frame_seconds(db: Session, event_id: str) -> float | None:
+    value = db.execute(_BEST_FRAME_SECONDS_SQL, {"event_id": event_id}).scalar()
+    return float(value) if value is not None else None
 
 
 def get_avg_detection_confidence(db: Session, event_id: str) -> float | None:

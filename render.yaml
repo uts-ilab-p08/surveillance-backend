@@ -37,6 +37,11 @@ services:
         sync: false
       - key: SUPABASE_URL
         sync: false
+      # This service's own public https URL, used to build /search's
+      # thumbnail_url — without it, the URL is derived from the request
+      # and can come out as http:// behind Render's proxy.
+      - key: PUBLIC_BASE_URL
+        sync: false
       # RAG (ilabs-cctv-rag package, imported in-process — see
       # app/services/rag_client.py). Read directly by that package's own
       # rag/config.py, not by this backend's Settings class — still

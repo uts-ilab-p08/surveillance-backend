@@ -130,3 +130,33 @@ def test_search_returns_502_when_rag_unavailable():
         resp = client.get("/api/v1/search", params={"q": "car parked"})
 
     assert resp.status_code == 502
+
+
+def test_search_fills_thumbnail_url_only_for_results_with_an_event_id():
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+    _override_db(mock_db)
+
+    fake_result = RagQueryResult(
+        answer="ok", results=[_result_item(event_id="ev1"), _result_item(event_id=None)]
+    )
+    with patch.object(search_route, "rag_query", return_value=fake_result):
+        resp = client.get("/api/v1/search", params={"q": "car parked"})
+
+    results = resp.json()["results"]
+    assert results[0]["thumbnail_url"] == "http://testserver/api/v1/clips/ev1/thumbnail.jpg"
+    assert results[1]["thumbnail_url"] is None
+
+
+def test_search_thumbnail_url_uses_public_base_url_when_configured():
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+    _override_db(mock_db)
+
+    fake_result = RagQueryResult(answer="ok", results=[_result_item(event_id="ev1")])
+    settings = search_route.get_settings().model_copy(update={"public_base_url": "https://api.example.com"})
+    with patch.object(search_route, "rag_query", return_value=fake_result), \
+         patch.object(search_route, "get_settings", return_value=settings):
+        resp = client.get("/api/v1/search", params={"q": "car parked"})
+
+    assert resp.json()["results"][0]["thumbnail_url"] == "https://api.example.com/api/v1/clips/ev1/thumbnail.jpg"

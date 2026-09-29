@@ -28,7 +28,7 @@ class RagResultItem(BaseModel):
     camera: str | None = None  # bronze.videos.camera_id
     scene: str | None = None  # bronze.videos.scene — confirmed the MEVA site name
     timestamp: str | None = None  # ISO 8601; see app/services/rag_client.py for the timezone caveat
-    thumbnail_url: str | None = None  # not produced anywhere yet — needs an ffmpeg extraction step
+    thumbnail_url: str | None = None  # GET /clips/{event_id}/thumbnail.jpg — set by the /search route
     tags: list[ClipTag] = []  # via app/services/tagging.py, same as Clip.tags
 
 

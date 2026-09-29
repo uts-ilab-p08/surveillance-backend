@@ -7,6 +7,8 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 PyJWT[crypto]==2.9.0  # verifies Supabase-issued JWTs — see app/api/deps.py. The [crypto] extra pulls in `cryptography`, required for ES256
 httpx==0.27.2
+av==18.1.0  # PyAV: in-process frame extraction for clip thumbnails (Render has no system ffmpeg; imageio-ffmpeg's static binary segfaults on DNS). See app/services/thumbnails.py
+pillow==12.3.0  # JPEG encoding for PyAV frames (frame.to_image())
 pytest==8.3.3
 pytest-asyncio==0.24.0
 ilabs-cctv-rag @ git+https://github.com/uts-ilab-p08/iLabs-capstone-rag.git@v0.1.4
