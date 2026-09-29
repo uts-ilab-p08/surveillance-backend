@@ -241,58 +241,82 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 pytest tests/ -q
 ```
 
-## Deploying to Render
+## Deploying to Railway
 
-`render.yaml` is a Blueprint — Render reads it to auto-configure the
-service instead of you clicking through settings by hand. One-time setup:
+The backend is deployed on **Railway** (Hobby plan). Render's free tier
+isn't enough: the RAG package loads its `BAAI/bge-base-en-v1.5`
+embedding model in-process on the first `/search`, which alone peaks at
+~800MB RAM (measured in a Linux container). Render's 512MB instance gets
+OOM-killed and `/search` never responds. Budget roughly 1GB for this
+service, which works out to about $11-12/month in Railway usage at its
+posted rates ($10/GB RAM, $20/vCPU per month); the $5 Hobby fee counts
+toward that.
 
-1. Push this repo to GitHub (already done — `main` is up to date).
-2. In the Render dashboard: **New +** -> **Blueprint** -> connect the
-   `surveillance-backend` GitHub repo. Render detects `render.yaml`
-   automatically.
-3. Render will prompt you for the env vars marked `sync: false` in
-   `render.yaml` — these are the secrets/project-specific values it can't
-   read from the repo (and shouldn't: `.env` is gitignored on purpose).
-   Fill in the same values you have locally in `.env`:
-   `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME` (the shared
-   Supabase project's pooler connection details),
-   `SUPABASE_URL` (the project's base URL — not a secret, see "Auth" above),
-   the RAG package's own vars (`DATABASE_URL`, `DB_SCHEMA`, `QDRANT_URL`,
-   `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `EMBED_MODEL`, `EMBED_DIM`,
-   `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` — see "Talking to the RAG
-   repo"; `QDRANT_URL` must be real, or the package silently falls back
-   to a local index Render's disk wipes on every deploy),
-   `CORS_ORIGINS` (the frontend's deployed URL, once they have one;
-   `http://localhost:3000` won't work for a deployed frontend talking to a
-   deployed backend), and **`PUBLIC_BASE_URL`** (see below).
+`railway.json` holds the build/deploy config, and it **overrides the
+dashboard**:
 
-   > **⚠️ `PUBLIC_BASE_URL` — don't skip it.** Set it to this service's
-   > own public https URL, no trailing path:
-   > `https://<your-service>.onrender.com`. `GET /search` uses it to build
-   > each result's absolute `thumbnail_url`
-   > (`<PUBLIC_BASE_URL>/api/v1/clips/{event_id}/thumbnail.jpg`). If it's
-   > unset, the backend falls back to the incoming request's own URL,
-   > which behind Render's proxy can come out as `http://` — an https
+- `startCommand`: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+  Railpack can't infer this, because the app lives at `app/main.py`
+  rather than a root `main.py`. Without `--host 0.0.0.0 --port $PORT`,
+  uvicorn binds to `127.0.0.1:8000` and the platform never detects an
+  open port.
+- `preDeployCommand`: `alembic upgrade head`. It runs once per deploy,
+  before the new version starts. If a migration fails, the deploy
+  stops and the previous version keeps serving.
+- `healthcheckPath`: `/health`. Traffic only switches over once it
+  responds. It doesn't touch the embedding model, so it's fast.
+
+One-time setup:
+
+1. **New Project → Deploy from GitHub repo →** `surveillance-backend`
+   (branch `main`).
+2. **Settings → Networking → Generate Domain**, which gives
+   `https://<name>.up.railway.app`.
+3. **Variables**: the same values as your local `.env`:
+   - `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME` (the shared
+     Supabase project's pooler connection details).
+   - `SUPABASE_URL` (the project's base URL; not a secret, see "Auth" above).
+   - The RAG package's own vars: `DATABASE_URL`, `DB_SCHEMA`,
+     `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `EMBED_MODEL`,
+     `EMBED_DIM`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` (see
+     "Talking to the RAG repo"). `QDRANT_URL` must be real, or the
+     package silently falls back to an empty local index.
+   - `CORS_ORIGINS`: the frontend's deployed URL.
+   - `ENVIRONMENT=production`.
+   - **`PUBLIC_BASE_URL`** (see below).
+
+   > **⚠️ `PUBLIC_BASE_URL`: don't skip it.** Set it to the domain from
+   > step 2, with no trailing path: `https://<name>.up.railway.app`.
+   > `GET /search` uses it to build each result's absolute
+   > `thumbnail_url` (`<PUBLIC_BASE_URL>/api/v1/clips/{event_id}/thumbnail.jpg`).
+   > If it's unset, the backend falls back to the incoming request's own
+   > URL, which behind a proxy can come out as `http://`. An https
    > frontend then blocks every thumbnail as mixed content, and the cards
    > show broken images. Nothing errors server-side, so it's easy to miss.
    > Check after deploying: run a search and confirm `thumbnail_url` starts
    > with `https://`.
-   >
-   > `THUMBNAIL_CACHE_DIR` is optional (defaults to the OS temp dir).
-   > Either way the cache lives on Render's ephemeral disk: it's wiped on
-   > every deploy/restart and refills lazily, so the first load of each
-   > thumbnail after a deploy is slow again (~1-6s).
 
-4. Deploy. Render runs `alembic upgrade head` before starting the server
-   on every deploy (see `startCommand` in `render.yaml`) — safe to leave
-   as-is, since re-running already-applied migrations is a no-op.
-5. `GET https://<your-service>.onrender.com/health` should return
-   `{"status": "ok"}` once it's up. Share the base URL with the frontend
-   team so they can stop pointing at `localhost`.
+4. **Workspace → Usage**: set a **hard limit of $20** (the minimum
+   allowed is $10) and a soft limit around $15. Railway emails at
+   75/90/100% of the hard limit, then takes every service in the
+   workspace offline. Nothing is deleted. Raise or remove the limit and
+   it redeploys automatically.
+5. Leave **Serverless** (app sleeping) **off** for demos. A woken service
+   has to download and reload the ~800MB model, and Railway documents
+   that the first request after sleeping may return 502.
+6. `GET https://<name>.up.railway.app/health` should return
+   `{"status": "ok"}`. Share the base URL with the frontend team.
 
-Render's free tier spins the service down after inactivity and takes
-~30-60s to wake back up on the next request — fine for this stage of the
-project, but worth knowing if a demo's first request looks slow.
+Ephemeral disk: without a Volume, the thumbnail cache (`THUMBNAIL_CACHE_DIR`,
+default is the OS temp dir) and fastembed's model download are both wiped
+on every deploy/restart. The first `/search` then re-downloads the model
+(~10s), and each thumbnail's first load is slow again (~1-6s). To keep
+them, mount a Volume and point `THUMBNAIL_CACHE_DIR` and
+`FASTEMBED_CACHE_PATH` at it. Setting `HF_TOKEN` silences the Hugging
+Face "unauthenticated requests" warning and speeds up the download.
+
+`render.yaml` is still in the repo. It works on a Render plan with ≥1GB
+RAM, but it isn't the active deploy target.
 
 ## What's next
 
