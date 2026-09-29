@@ -26,11 +26,13 @@ _EVENT_WITH_VIDEO_SQL = text("""
 
 # Object labels for one event, via the only path that exists
 # (events -> event_objects -> objects; see §2.1/§2.4 of the dictionary).
+# label_details is a JSON array of {label, confidence, descriptions, ...}.
 _OBJECT_TYPES_FOR_EVENT_SQL = text("""
-    SELECT DISTINCT jsonb_object_keys(o.label_details) AS label
+    SELECT DISTINCT ld->>'label' AS label
     FROM bronze.event_objects eo
     JOIN bronze.objects o ON o.object_id = eo.object_id
-    WHERE eo.event_id = :event_id
+    CROSS JOIN LATERAL jsonb_array_elements(o.label_details) AS ld
+    WHERE eo.event_id = :event_id AND ld ? 'label'
 """)
 
 # Nearby events on the same camera, closest in time first — our own
@@ -144,7 +146,7 @@ _TRACK_GEOMETRIES_SQL = text("""
     JOIN bronze.objects o ON o.object_id = eo.object_id
     JOIN bronze.geometries g ON g.object_id = o.object_id
     WHERE e.video_id = :video_id
-      AND (:event_id IS NULL OR e.event_id = :event_id)
+      AND (CAST(:event_id AS text) IS NULL OR e.event_id = CAST(:event_id AS text))
       AND g.timestamp_seconds BETWEEN :start_seconds AND :end_seconds
     ORDER BY o.object_id, g.timestamp_seconds
 """)
