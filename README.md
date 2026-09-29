@@ -107,8 +107,9 @@ Supabase REST API directly, for manual testing) and pass it as
 | `GET /search` | Forwards a natural-language query to the RAG service. **Not yet updated for the real RAG contract** — still returns RAG's raw `answer`/`sources` reshaped a bit, not the full `Clip[]` the frontend spec expects. Blocked on confirming the RAG response shape (see "Talking to the RAG repo"). |
 | `GET /clips/{id}` | Fetches one clip directly from the annotation team's `bronze` schema, by `event_id`. Independent of the RAG contract — built and working. |
 | `GET /clips/{id}/related` | Nearby clips on the same camera, closest in time first (our own heuristic — the frontend contract doesn't specify one). |
+| `GET /clips/{id}/thumbnail.jpg` | One JPEG frame for the clip — the moment with the most detected objects, via `bronze.geometries`. Extracted in-process with PyAV on first request (~1-6s, network-bound against R2) and cached on local disk after that. **Public** (no Bearer token): it's loaded via `<img src>`, and the source MP4 is already public. `GET /search` fills each result's `thumbnail_url` with this route. |
 | `GET /cameras` | The Cameras Directory modal — camera code, scene, and event count, aggregated from `bronze`. |
-| `GET /queries/recent` | A user's recent searches. **Currently always empty** — nothing writes to it yet, since that write is a side effect of `POST /search`, which isn't wired to real RAG results yet either. |
+| `GET /queries/recent?limit=N` | A user's recent searches, newest first. `limit` defaults to 20 (1-100); Home asks for 3. Rows are written as a side effect of `GET /search`. |
 | `GET /queries/saved` | A user's bookmarked searches. |
 | `POST /queries/saved` | Bookmarks a query. `hits` starts at 0 and is meant to increment when that same query is re-run through `POST /search` — that increment logic isn't wired up yet (same blocker as above). |
 | `GET /health` | Plain liveness check, no auth — for uptime monitors and deploy platforms. |
@@ -126,7 +127,7 @@ Not built yet, on purpose: rate limiting, request logging middleware,
 retry/backoff on the outbound RAG call, and the two conversational
 assistant endpoints (`POST /assistant/query`, `POST /assistant/summarize-clip`)
 the frontend spec adds for Results/Clip Detail — on hold pending the
-team's weekly connect (along with the `thumbnailUrl` question). Video
+team's weekly connect. Video
 upload and the annotation hand-off (`POST /videos/upload`, `POST
 /annotate`) stay removed — the product doesn't let users upload footage.
 
@@ -256,11 +257,32 @@ service instead of you clicking through settings by hand. One-time setup:
    `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME` (the shared
    Supabase project's pooler connection details),
    `SUPABASE_URL` (the project's base URL — not a secret, see "Auth" above),
-   `RAG_SERVICE_URL` (leave blank for now — `/search`
-   falls back to its mock response until this is set, same as local dev),
-   and `CORS_ORIGINS` (the frontend's deployed URL, once they have one;
+   the RAG package's own vars (`DATABASE_URL`, `DB_SCHEMA`, `QDRANT_URL`,
+   `QDRANT_API_KEY`, `QDRANT_COLLECTION`, `EMBED_MODEL`, `EMBED_DIM`,
+   `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` — see "Talking to the RAG
+   repo"; `QDRANT_URL` must be real, or the package silently falls back
+   to a local index Render's disk wipes on every deploy),
+   `CORS_ORIGINS` (the frontend's deployed URL, once they have one;
    `http://localhost:3000` won't work for a deployed frontend talking to a
-   deployed backend).
+   deployed backend), and **`PUBLIC_BASE_URL`** (see below).
+
+   > **⚠️ `PUBLIC_BASE_URL` — don't skip it.** Set it to this service's
+   > own public https URL, no trailing path:
+   > `https://<your-service>.onrender.com`. `GET /search` uses it to build
+   > each result's absolute `thumbnail_url`
+   > (`<PUBLIC_BASE_URL>/api/v1/clips/{event_id}/thumbnail.jpg`). If it's
+   > unset, the backend falls back to the incoming request's own URL,
+   > which behind Render's proxy can come out as `http://` — an https
+   > frontend then blocks every thumbnail as mixed content, and the cards
+   > show broken images. Nothing errors server-side, so it's easy to miss.
+   > Check after deploying: run a search and confirm `thumbnail_url` starts
+   > with `https://`.
+   >
+   > `THUMBNAIL_CACHE_DIR` is optional (defaults to the OS temp dir).
+   > Either way the cache lives on Render's ephemeral disk: it's wiped on
+   > every deploy/restart and refills lazily, so the first load of each
+   > thumbnail after a deploy is slow again (~1-6s).
+
 4. Deploy. Render runs `alembic upgrade head` before starting the server
    on every deploy (see `startCommand` in `render.yaml`) — safe to leave
    as-is, since re-running already-applied migrations is a no-op.
@@ -280,10 +302,10 @@ project, but worth knowing if a demo's first request looks slow.
    `Clip` per result via `app/services/clip_builder.py`, and write the
    `recent_queries` / `saved_queries.hits` side effects described in the
    frontend spec.
-3. Decide, with the frontend team, whether `thumbnailUrl` needs a
-   backend/pipeline-produced image at all, or whether the frontend can
-   derive a poster frame client-side from `videoUrl` — on hold for the
-   weekly connect.
+3. `thumbnailUrl` is now produced for `/search` results (see
+   `GET /clips/{id}/thumbnail.jpg`). `GET /clips/{id}` and
+   `/clips/{id}/related` still return `null` — same route, just not
+   wired into `build_clip` yet.
 4. Build the two conversational assistant endpoints — also on hold for
    the weekly connect, once an LLM provider is picked.
 5. Deploy this API somewhere with a real, reachable URL (Render/Railway

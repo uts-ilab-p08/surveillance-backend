@@ -26,11 +26,13 @@ _EVENT_WITH_VIDEO_SQL = text("""
 
 # Object labels for one event, via the only path that exists
 # (events -> event_objects -> objects; see §2.1/§2.4 of the dictionary).
+# label_details is a JSON array of {label, confidence, descriptions, ...}.
 _OBJECT_TYPES_FOR_EVENT_SQL = text("""
-    SELECT DISTINCT jsonb_object_keys(o.label_details) AS label
+    SELECT DISTINCT ld->>'label' AS label
     FROM bronze.event_objects eo
     JOIN bronze.objects o ON o.object_id = eo.object_id
-    WHERE eo.event_id = :event_id
+    CROSS JOIN LATERAL jsonb_array_elements(o.label_details) AS ld
+    WHERE eo.event_id = :event_id AND ld ? 'label'
 """)
 
 # Nearby events on the same camera, closest in time first — our own
@@ -63,6 +65,22 @@ _AVG_DETECTION_CONFIDENCE_SQL = text("""
 """)
 
 
+# The single most "populated" moment of an event — the timestamp with the
+# most detected objects (ties broken by confidence, then earliest) — used
+# to pick a representative thumbnail frame rather than a blind midpoint.
+_BEST_FRAME_SECONDS_SQL = text("""
+    SELECT g.timestamp_seconds
+    FROM bronze.events e
+    JOIN bronze.event_objects eo ON eo.event_id = e.event_id
+    JOIN bronze.geometries g ON g.object_id = eo.object_id
+    WHERE e.event_id = :event_id
+      AND g.timestamp_seconds BETWEEN e.start_seconds AND e.end_seconds
+    GROUP BY g.timestamp_seconds
+    ORDER BY COUNT(*) DESC, AVG(g.confidence) DESC, g.timestamp_seconds
+    LIMIT 1
+""")
+
+
 def get_event_with_video(db: Session, event_id: str) -> dict | None:
     row = db.execute(_EVENT_WITH_VIDEO_SQL, {"event_id": event_id}).mappings().first()
     return dict(row) if row else None
@@ -71,6 +89,11 @@ def get_event_with_video(db: Session, event_id: str) -> dict | None:
 def get_object_types_for_event(db: Session, event_id: str) -> list[str]:
     rows = db.execute(_OBJECT_TYPES_FOR_EVENT_SQL, {"event_id": event_id}).all()
     return [row[0] for row in rows]
+
+
+def get_best_frame_seconds(db: Session, event_id: str) -> float | None:
+    value = db.execute(_BEST_FRAME_SECONDS_SQL, {"event_id": event_id}).scalar()
+    return float(value) if value is not None else None
 
 
 def get_avg_detection_confidence(db: Session, event_id: str) -> float | None:
@@ -144,7 +167,7 @@ _TRACK_GEOMETRIES_SQL = text("""
     JOIN bronze.objects o ON o.object_id = eo.object_id
     JOIN bronze.geometries g ON g.object_id = o.object_id
     WHERE e.video_id = :video_id
-      AND (:event_id IS NULL OR e.event_id = :event_id)
+      AND (CAST(:event_id AS text) IS NULL OR e.event_id = CAST(:event_id AS text))
       AND g.timestamp_seconds BETWEEN :start_seconds AND :end_seconds
     ORDER BY o.object_id, g.timestamp_seconds
 """)

@@ -1,13 +1,15 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_current_user
+from app.core.config import get_settings
 from app.db.models import RecentQuery, SavedQuery
 from app.db.session import get_db
 from app.schemas.rag import RagQueryResult
+from app.services import thumbnails
 from app.services.rag_client import RagServiceUnavailable, SearchFilters, query as rag_query
 
 router = APIRouter(tags=["search"])
@@ -42,8 +44,18 @@ def _record_search_side_effects(db: Session, user_id, query_text: str, result: R
         db.rollback()
 
 
+def _attach_thumbnail_urls(result: RagQueryResult, base_url: str) -> None:
+    """Points each result at GET /clips/{event_id}/thumbnail.jpg. Only a
+    URL — the frame itself is extracted when the browser first loads it,
+    so search latency doesn't pay for frame extraction."""
+    for item in result.results:
+        if item.event_id:
+            item.thumbnail_url = thumbnails.thumbnail_url(base_url, item.event_id)
+
+
 @router.get("/search", response_model=RagQueryResult)
 def search(
+    request: Request,
     q: str,
     limit: int = 10,
     cameras: list[str] | None = Query(default=None),
@@ -78,5 +90,6 @@ def search(
     except RagServiceUnavailable as exc:
         raise HTTPException(status_code=502, detail=f"Search service unreachable: {exc}") from exc
 
+    _attach_thumbnail_urls(result, get_settings().public_base_url or str(request.base_url))
     _record_search_side_effects(db, user.id, q, result)
     return result

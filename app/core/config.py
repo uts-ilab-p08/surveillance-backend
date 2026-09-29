@@ -82,6 +82,20 @@ class Settings(BaseSettings):
     # vars belong in this backend's .env / Render env for the package to
     # pick up, but are deliberately not duplicated as Settings fields here.
 
+    # Clip thumbnails — GET /clips/{id}/thumbnail.jpg extracts one frame
+    # from the event's R2 MP4 on first request and caches the JPEG on
+    # local disk (see app/services/thumbnails.py). Render's disk is
+    # ephemeral, so the cache is lost on every deploy and simply refills;
+    # left unset, it lives under the OS temp dir.
+    thumbnail_cache_dir: str | None = None
+
+    # Absolute base URL /search uses to build each result's thumbnail_url
+    # (e.g. "https://surveillance-backend.onrender.com"). Left unset, the
+    # incoming request's own base URL is used — fine locally, but behind
+    # Render's proxy that can come out as http:// and get blocked as mixed
+    # content on an https frontend, so set it in production.
+    public_base_url: str | None = None
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
