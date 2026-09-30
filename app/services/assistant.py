@@ -16,8 +16,10 @@ import re
 from typing import Literal
 
 from rag import llm
+from sqlalchemy.orm import Session
 
 from app.schemas.assistant import AssistantAskRequest, AssistantMoment, ChatTurn
+from app.services import bronze
 
 
 class AssistantUnavailable(Exception):
@@ -125,13 +127,37 @@ def generate_answer(request: AssistantAskRequest) -> tuple[str, list[str]]:
 # what the data supports" (no camera question with one camera, no vehicle
 # question with no vehicles, nothing needing wall-clock time) — an LLM can
 # still be tempted to suggest something the data can't actually answer.
+#
+# Two tiers of evidence, in order of preference:
+#   1. Real bronze annotations, via each moment's event_id (§5.1 gave us
+#      this on every /search result — the frontend just needs to pass it
+#      through when it builds a moment). This is the *actual* object
+#      detector output for that event (bronze.objects.label_details), not
+#      just whatever words happen to appear in the caption someone wrote.
+#      A caption saying "a vehicle passes by" won't match "car"/"truck"
+#      substrings, but the real object_types will still say "car".
+#   2. Caption-text substring matching — the original heuristic, used only
+#      as a fallback for a moment with no event_id (older data, or a
+#      moment the frontend didn't build from a fresh /search result).
 # ---------------------------------------------------------------------------
 
-# Same vocabulary app/services/tagging.py uses for object_types, applied
-# here as a plain substring check against caption text (AssistantMoment
-# has no object_types field — only free-text captions).
+# Same vocabulary app/services/tagging.py's _OBJECT_TYPE_TO_TAG uses for
+# real detector labels (bronze.objects.label_details), vs. a much looser
+# substring check against free-text captions when no event_id is available.
+_VEHICLE_OBJECT_TYPES = {"car", "truck", "bus", "motorcycle", "bicycle"}
+_PERSON_OBJECT_TYPES = {"person"}
 _VEHICLE_WORDS = {"car", "truck", "bus", "motorcycle", "bicycle", "bike", "van", "suv", "vehicle"}
 _PERSON_WORDS = {"person", "man", "woman", "pedestrian", "individual"}
+
+# Object labels the detector can emit that suggest something was carried
+# or set down — not in tagging.py's ClipTag mapping (which only fires this
+# off event_name keywords like "abandon"/"left unattended"), but a useful
+# signal here even when the event_name/caption never uses those words.
+_LEFT_BEHIND_OBJECT_TYPES = {"backpack", "bag", "suitcase", "handbag"}
+
+# Below this, "how confident is this match?" is worth asking outright
+# rather than only appearing as generic filler.
+_LOW_CONFIDENCE_THRESHOLD = 0.5
 
 _MOMENT_SCOPE_QUESTIONS = [
     "Who else was near this location around this time?",
@@ -154,15 +180,80 @@ def _mentions_any(caption: str, words: set[str]) -> bool:
     return any(word in lowered for word in words)
 
 
+class _Annotations:
+    """Real bronze annotations for one event, or an empty placeholder when
+    there's no event_id or the lookup failed."""
+
+    def __init__(self, object_types: list[str] | None = None, avg_confidence: float | None = None):
+        self.object_types = object_types or []
+        self.avg_confidence = avg_confidence
+
+
+def _gather_annotations(db: Session | None, moments: list[AssistantMoment]) -> dict[str, _Annotations]:
+    """event_id -> _Annotations, for every moment that has one. Best-effort:
+    suggestions are a nice-to-have, so a DB hiccup here degrades to the
+    caption-substring fallback instead of failing the whole request (same
+    posture as app/api/routes/search.py's _record_search_side_effects)."""
+    if db is None:
+        return {}
+
+    event_ids = {m.event_id for m in moments if m.event_id}
+    annotations: dict[str, _Annotations] = {}
+    for event_id in event_ids:
+        try:
+            object_types = bronze.get_object_types_for_event(db, event_id)
+            avg_confidence = bronze.get_avg_detection_confidence(db, event_id)
+        except Exception:
+            continue
+        annotations[event_id] = _Annotations(object_types, avg_confidence)
+    return annotations
+
+
+def _moment_has_object_type(
+    moment: AssistantMoment,
+    annotations: dict[str, _Annotations],
+    object_types: set[str],
+    caption_fallback_words: set[str],
+) -> bool:
+    ann = annotations.get(moment.event_id) if moment.event_id else None
+    if ann is not None and ann.object_types:
+        return any(o.strip().lower() in object_types for o in ann.object_types)
+    # No real annotations for this moment (no event_id, or the lookup came
+    # back empty/failed) — fall back to the caption heuristic rather than
+    # silently treating it as "no match".
+    return _mentions_any(moment.caption, caption_fallback_words)
+
+
 def generate_suggestions(
     scope: Literal["results", "moment"],
     moments: list[AssistantMoment],
     history: list[ChatTurn],
+    db: Session | None = None,
+    focus_moment_id: str | None = None,
 ) -> list[str]:
     already_asked = {t.text.strip().lower() for t in history if t.role == "user"}
+    annotations = _gather_annotations(db, moments)
 
     if scope == "moment":
-        candidates = list(_MOMENT_SCOPE_QUESTIONS)
+        # moments can be just the one focused moment, or the full set with
+        # one marked as focused (the frontend does either — see
+        # app/services/assistant.py's _format_moments, which handles both
+        # for the LLM prompt). Find it by id rather than assuming the list
+        # has exactly one entry; AssistantAskRequest/AssistantSuggestionsRequest's
+        # own validator already guarantees a valid focus_moment_id whenever
+        # scope="moment", so this should always resolve to a real moment.
+        focused = next((m for m in moments if m.moment_id == focus_moment_id), None)
+        candidates: list[str] = []
+        ann = annotations.get(focused.event_id) if focused and focused.event_id else None
+        if ann is not None:
+            if any(o.strip().lower() in _LEFT_BEHIND_OBJECT_TYPES for o in ann.object_types):
+                candidates.append("Was anything left behind at this location?")
+            other_objects = sorted({o for o in ann.object_types if o.strip().lower() not in ({"person"} | _VEHICLE_OBJECT_TYPES)})
+            if other_objects:
+                candidates.append("What other objects are visible in this moment?")
+            if ann.avg_confidence is not None and ann.avg_confidence < _LOW_CONFIDENCE_THRESHOLD:
+                candidates.append("How confident is this match?")
+        candidates.extend(_MOMENT_SCOPE_QUESTIONS)
     else:
         if not moments:
             return []
@@ -174,12 +265,32 @@ def generate_suggestions(
 
         candidates.append("Show only the highest-confidence event")
 
-        if any(_mentions_any(m.caption, _VEHICLE_WORDS) for m in moments):
+        if any(_moment_has_object_type(m, annotations, _VEHICLE_OBJECT_TYPES, _VEHICLE_WORDS) for m in moments):
             candidates.append("Narrow this to vehicle events only")
-        if any(_mentions_any(m.caption, _PERSON_WORDS) for m in moments):
+        if any(_moment_has_object_type(m, annotations, _PERSON_OBJECT_TYPES, _PERSON_WORDS) for m in moments):
             candidates.append("Narrow this to person events only")
 
+        if any(
+            any(o.strip().lower() in _LEFT_BEHIND_OBJECT_TYPES for o in annotations[m.event_id].object_types)
+            for m in moments
+            if m.event_id and m.event_id in annotations
+        ):
+            candidates.append("Was anything left behind in these results?")
+
+        low_confidence_events = [
+            m for m in moments if m.event_id and (ann := annotations.get(m.event_id)) and ann.avg_confidence is not None
+            and ann.avg_confidence < _LOW_CONFIDENCE_THRESHOLD
+        ]
+        if low_confidence_events:
+            candidates.append("How confident is this match?")
+
     result = [q for q in candidates if q.strip().lower() not in already_asked]
+    # De-dupe while preserving order (a data-driven candidate and a generic
+    # fallback can legitimately produce the same string, e.g. "How
+    # confident is this match?" from both the low-confidence check and
+    # _GENERIC_FALLBACKS).
+    seen: set[str] = set()
+    result = [q for q in result if not (q.strip().lower() in seen or seen.add(q.strip().lower()))]
 
     if len(result) < 2:
         for filler in _GENERIC_FALLBACKS[scope]:

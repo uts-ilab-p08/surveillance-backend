@@ -26,21 +26,31 @@ data of its own to manage.
   service) that pull MEVA clips, run motion/object detection and a local
   VLM over them, and load the results into the shared Supabase project's
   `bronze` schema, with the actual video files hosted on Cloudflare R2.
-- **RAG repo** — vector search + LLM. `GET /search` forwards the query
-  there and passes the response straight back, including each result's
-  video reference, playback URL, and relevance score. Retrieval and
-  generation both happen on their side, including the user-facing answer
-  text.
-- **This repo** — the search relay, plus a read layer over `bronze` for
-  clip/camera detail and per-user query history.
+- **RAG repo** — vector search + LLM, shipped as an installable Python
+  package (`ilabs-cctv-rag`, pinned in `requirements.txt`) rather than a
+  separate HTTP service. `GET /search` calls `rag.pipeline.answer_query()`
+  in-process to get each result's `video_id`/`event_id`/score, then this
+  repo does its own lookup into `bronze` (see "Talking to the RAG repo")
+  to fill in everything the frontend needs beyond that. The assistant
+  endpoints (`POST /assistant/ask`, `/assistant/ask/stream`,
+  `/assistant/suggestions`) reuse the same package's `rag.llm.complete()`
+  for text generation, rather than calling an LLM directly.
+- **This repo** — the search relay plus enrichment, the conversational
+  assistant endpoints, and a read layer over `bronze` for clip/camera
+  detail and per-user query history.
 - **Supabase Auth (GoTrue)** — owns identity entirely. The frontend logs
   users in directly against Supabase; this backend only verifies the JWT
   it issues.
 
-The RAG integration works without that service running: leave
-`RAG_SERVICE_URL` unset and `/search` falls back to a mock response.
-Useful for developing or demoing this repo on its own — flip the URL on
-once RAG is up, no code changes needed.
+Because the RAG package runs in-process, there's no separate service to
+start or point a URL at — `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` and
+`QDRANT_URL`/`QDRANT_API_KEY` (see "Deploying to Render" below) are read
+by the package itself, not by this repo's own `Settings`. There's no
+mock fallback built into *this* repo for that path anymore (the old
+`RAG_SERVICE_URL`-unset mock was removed along with the HTTP client) —
+what happens with those vars unset is the RAG package's own behavior, not
+something this README can promise; check with Abhishek/that repo if you
+need to develop against `/search` without real values configured.
 
 ## Auth
 
@@ -104,61 +114,79 @@ Supabase REST API directly, for manual testing) and pass it as
 
 | Endpoint | What it does |
 |---|---|
-| `GET /search` | Forwards a natural-language query to the RAG service. **Not yet updated for the real RAG contract** — still returns RAG's raw `answer`/`sources` reshaped a bit, not the full `Clip[]` the frontend spec expects. Blocked on confirming the RAG response shape (see "Talking to the RAG repo"). |
+| `GET /search` | Calls the RAG package in-process (`rag.pipeline.answer_query()`), then enriches each result from `bronze` by `event_id` — `event_name`, `description`, `camera`, `scene`, `tags`, `thumbnail_url`, and an honest-`null` `timestamp` (see "Talking to the RAG repo"). Also accepts `cameras`/`scenes`/`tags`/`min_confidence`/`date_from`/`date_to`, applied **after** retrieval, not before — a documented limitation, not an oversight (see that section). Writes the `recent_queries`/`saved_queries.hits` side effects described in the frontend spec. |
 | `GET /clips/{id}` | Fetches one clip directly from the annotation team's `bronze` schema, by `event_id`. Independent of the RAG contract — built and working. |
 | `GET /clips/{id}/related` | Nearby clips on the same camera, closest in time first (our own heuristic — the frontend contract doesn't specify one). |
 | `GET /clips/{id}/thumbnail.jpg` | One JPEG frame for the clip — the moment with the most detected objects, via `bronze.geometries`. Extracted in-process with PyAV on first request (~1-6s, network-bound against R2) and cached on local disk after that. **Public** (no Bearer token): it's loaded via `<img src>`, and the source MP4 is already public. `GET /search` fills each result's `thumbnail_url` with this route. |
+| `GET /videos/{video_id}/tracks` | Per-object bounding-box tracks for one video, from `bronze.geometries`. `start_seconds`/`end_seconds` are validated against the video's real `duration_seconds` (422 if out of range) rather than trusted blindly. |
 | `GET /cameras` | The Cameras Directory modal — camera code, scene, and event count, aggregated from `bronze`. |
 | `GET /queries/recent?limit=N` | A user's recent searches, newest first. `limit` defaults to 20 (1-100); Home asks for 3. Rows are written as a side effect of `GET /search`. |
 | `GET /queries/saved` | A user's bookmarked searches. |
-| `POST /queries/saved` | Bookmarks a query. `hits` starts at 0 and is meant to increment when that same query is re-run through `POST /search` — that increment logic isn't wired up yet (same blocker as above). |
+| `POST /queries/saved` | Bookmarks a query. Idempotent — re-bookmarking the same (normalized) query text returns the existing row rather than creating a duplicate, and `hits` increments as a side effect of `GET /search` matching that text. |
+| `DELETE /queries/saved/{id}` | Un-bookmarks a query. 404 (not 403) for a saved query that doesn't belong to the caller, so it can't be used to probe which ids exist. |
+| `POST /assistant/ask` | Conversational follow-up chat on Results/Clip Detail. Stateless — the frontend resends `query`/`moments`/`history`/`scope`/`focus_moment_id` every call; this backend never stores chat state. Answers only from the given `moments` via `rag.llm.complete()`, with the model's own citations checked against the request before being returned (see `app/services/assistant.py`). |
+| `POST /assistant/ask/stream` | Same request/response contract as `POST /assistant/ask`, as Server-Sent Events, so the frontend can show what's happening (`Reading N moments…`, `Generating answer…`, `Verifying citations…`, `Drafting follow-up questions…`) instead of a blank wait. Coarse status only, not token streaming — `rag.llm.complete()` has no streaming variant, so there's a real gap between the "generating" status and the result. Needs a `fetch()` + manual SSE reader on the frontend, not `new EventSource(...)` (that API can't send the request body this needs). |
+| `POST /assistant/suggestions` | Opening suggested questions for Results/Clip Detail — rule-based, not an LLM call, so it can guarantee it never suggests a question the data can't answer. Prefers real `bronze` annotations (object detections, average confidence) via each moment's `event_id` over pattern-matching the caption text; a moment with no `event_id` falls back to the caption heuristic. |
 | `GET /health` | Plain liveness check, no auth — for uptime monitors and deploy platforms. |
 
 All routes above except `/health` require a valid Supabase JWT.
 
-**`confidence` is RAG's raw relevance score, unscaled (0–1 float), passed
+**`score`/`confidence` is RAG's raw relevance score, unscaled (0–1 float), passed
 through exactly as received — no `* 100` conversion.** If the frontend
 wants a percentage, it converts it client-side. Note this diverges from
 the frontend spec's own written §2.2 normalization table
 (`confidence = round(score * 100)`) — flagged to the frontend team,
 pending their sign-off on updating that doc to match.
 
-Not built yet, on purpose: rate limiting, request logging middleware,
-retry/backoff on the outbound RAG call, and the two conversational
-assistant endpoints (`POST /assistant/query`, `POST /assistant/summarize-clip`)
-the frontend spec adds for Results/Clip Detail — on hold pending the
-team's weekly connect. Video
-upload and the annotation hand-off (`POST /videos/upload`, `POST
+Not built yet, on purpose: rate limiting and request logging middleware.
+Video upload and the annotation hand-off (`POST /videos/upload`, `POST
 /annotate`) stay removed — the product doesn't let users upload footage.
 
 ## Talking to the RAG repo
 
 This one contract is the entire coupling between this repo and the RAG
 repo — and it's also the whole product's search path (user query -> this
-endpoint -> RAG -> top-K videos with relevance scores -> frontend). If
-the shape needs to change, it's a conversation with that team first.
+call -> bronze enrichment -> frontend). If the package's own return shape
+changes, it's a conversation with Abhishek first.
 
-**RAG service** (`app/services/rag_client.py`):
+**RAG package** (`app/services/rag_client.py`), in-process, not HTTP:
+```python
+from rag.pipeline import answer_query
+answer_query(query, limit=10)  # -> {score, annotation, video_id, event_id} per source
 ```
-Backend -> POST {RAG_SERVICE_URL}/query
-           {"query": "...", "limit": 10}
-RAG     -> 200 {"answer": "...",
-                "results": [{"video_id": "<bronze video_id, a sha256 hex
-                              string — not a UUID>",
-                             "video_url": "<public R2 URL, if available>",
-                             "start_seconds": 0.0, "end_seconds": 10.0,
-                             "caption": "...", "score": 0.83}, ...]}
-```
+Deliberately minimal on purpose — camera, scene, timestamps and
+`video_url` are **not** included; the package's own view is "the backend
+just does not need them: it looks the rest up in Postgres by `event_id`".
+`app/services/rag_client.py` does exactly that lookup (via
+`app/services/bronze.py` and `app/services/tagging.py`) to build the
+`RagResultItem` the frontend actually gets — see `app/schemas/rag.py`.
 
-The corresponding schema lives in `app/schemas/rag.py`
-(`RagQueryResult`), so a shape change is a one-file diff on this side.
-Open question with Abhishek (RAG): whether each result also includes
-`event_id`, not just `video_id` — without it, this backend can't reliably
-resolve which event in a multi-event video matched (see
-`app/services/bronze.py`'s four-hop bronze traversal). Also confirmed:
-RAG owns the full user-facing answer text; this backend's own LLM usage,
-if any, is scoped to the separate `/assistant/*` endpoints only, not
-`/search`.
+Two things worth knowing if this needs to change:
+
+- **Filtering is applied after retrieval, not before.** `answer_query()`
+  only ever returns up to its own top-K (5) sources, and has no
+  structured-filter parameter — its own NL filter extractor only
+  recognises a camera/scene mentioned in the query text itself, nothing
+  about tags, a confidence threshold, or a date range. So `/search`'s
+  `cameras`/`scenes`/`tags`/`min_confidence`/`date_from`/`date_to`
+  params can only narrow those 5 results, never surface a 6th one RAG
+  didn't return. Real pre-retrieval filtering needs the RAG package's own
+  `answer_query()` to accept filters — raise it with that team if a demo
+  needs it to behave differently.
+- **`timestamp` is `null` for effectively every result today.** It's
+  meant to be a real calendar date/time (not the in-clip
+  `start_seconds`/`end_seconds`, which are always populated), but
+  `bronze.videos.capture_time_zone` is `'unknown'` for every video in the
+  dataset right now — confirmed by direct query, not assumed — so there's
+  no safe way to convert seconds-into-file into a real UTC/local time.
+  `date_from`/`date_to` filtering correctly excludes (never assumes) a
+  result with no real timestamp, rather than guessing. This is an
+  annotation-pipeline-level gap, not something this backend can fix on
+  its own.
+
+RAG owns the full user-facing answer text for `/search`; this backend's
+own LLM usage (`rag.llm.complete()`, the same package's shared client) is
+scoped to the separate `/assistant/*` endpoints only.
 
 ## Project layout
 
@@ -176,9 +204,18 @@ app/
                           shape)
   api/
     deps.py               Supabase JWT verification dependency (JWKS/ES256, with a local-only HS256 fallback)
-    routes/               search, clips, cameras, queries, health
+    routes/               search, clips, cameras, queries, assistant, videos, health
   services/
-    rag_client.py            HTTP client -> RAG repo
+    rag_client.py            In-process client for the RAG package
+                              (rag.pipeline.answer_query) + bronze
+                              enrichment for GET /search
+    assistant.py              POST /assistant/ask(/stream) and
+                              /assistant/suggestions — prompt-building,
+                              citation parsing, rule-based suggestions
+    thumbnails.py             Lazy per-clip JPEG frame extraction (PyAV),
+                              cached on local disk
+    tracks.py                 Per-object bounding-box tracks for
+                              GET /videos/{video_id}/tracks
     bronze.py                Read-only queries over the annotation team's
                               bronze schema
     clip_builder.py           Builds the frontend's Clip shape from a
@@ -223,8 +260,11 @@ from scratch, or insert the stub row into `auth.users` yourself.
 
 ## Testing it end-to-end
 
-This runs every route against a real Postgres instance, with the RAG
-service left on its built-in mock:
+This runs every route against a real Postgres instance. `/search` and
+the `/assistant/*` endpoints also need the RAG package's own env vars
+set for real (`LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`,
+`QDRANT_URL`/`QDRANT_API_KEY` — see "Deploying to Render") — there's no
+mock fallback for those anymore:
 
 ```bash
 alembic upgrade head
@@ -233,7 +273,7 @@ uvicorn app.main:app --reload &
 TOKEN="<a Supabase-issued JWT, e.g. from logging in on the frontend>"
 AUTH="-H \"Authorization: Bearer $TOKEN\""
 
-# search (mocked until RAG_SERVICE_URL is set)
+# search
 curl -s -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8000/api/v1/search?q=did+anyone+enter+the+building"
 
@@ -320,18 +360,23 @@ RAM, but it isn't the active deploy target.
 
 ## What's next
 
-1. Confirm the RAG contract with Abhishek — specifically, whether each of
-   the 5 results includes `event_id`. (Message sent; awaiting reply.)
-2. Once that's confirmed: rewrite `POST /search` to call RAG, build a
-   `Clip` per result via `app/services/clip_builder.py`, and write the
-   `recent_queries` / `saved_queries.hits` side effects described in the
-   frontend spec.
-3. `thumbnailUrl` is now produced for `/search` results (see
-   `GET /clips/{id}/thumbnail.jpg`). `GET /clips/{id}` and
-   `/clips/{id}/related` still return `null` — same route, just not
-   wired into `build_clip` yet.
-4. Build the two conversational assistant endpoints — also on hold for
-   the weekly connect, once an LLM provider is picked.
-5. Deploy this API somewhere with a real, reachable URL (Render/Railway
-   are reasonable free-tier options) so the frontend isn't stuck pointing
-   at `localhost`.
+1. `GET /clips/{id}` and `/clips/{id}/related` still return `null` for
+   `thumbnailUrl` — same route as `/search`, just not wired into
+   `build_clip` yet.
+2. `capture_time_zone` is `'unknown'` for every video in `bronze` today,
+   so `/search`'s `timestamp` field is `null` everywhere (see "Talking to
+   the RAG repo") — this needs a fix at the annotation-pipeline source,
+   not here.
+3. `/search`'s `cameras`/`scenes`/`tags`/`min_confidence`/`date_from`/
+   `date_to` filtering is post-retrieval only, per RAG's own current
+   `answer_query()` — worth raising with the RAG team if a demo needs
+   true pre-retrieval filtering (see "Talking to the RAG repo").
+4. Confirm the newer dependencies (`av`, `pillow`, for
+   `GET /clips/{id}/thumbnail.jpg`) actually deploy cleanly on Render —
+   not yet verified on a live deploy.
+5. Double-check the Render dashboard actually has real values set for
+   every `sync: false` var in `render.yaml` (RAG/Qdrant/LLM vars,
+   `PUBLIC_BASE_URL`) — the YAML declares what Render should prompt for,
+   it doesn't set the values itself.
+6. Rate limiting and request logging middleware — not built yet, on
+   purpose (see "Endpoints").

@@ -21,6 +21,24 @@ class AssistantMoment(BaseModel):
     # moment the frontend sends today will have camera=None. Code here
     # must degrade gracefully rather than assume it's populated.
     camera: str | None = None
+    # GET /search has returned this since §5.1 — the frontend should just
+    # pass it straight through when it builds a moment from a search
+    # result. Lets app/services/assistant.py look up this event's real
+    # bronze annotations (object_types, confidence) for suggestions,
+    # instead of only pattern-matching the caption text. Optional and
+    # degrades gracefully: a moment with no event_id (older data, or a
+    # moment the frontend didn't build from a fresh /search result) just
+    # falls back to caption-based heuristics, same as before.
+    event_id: str | None = None
+    # Optional, additive to the spec's §3.4 contract. GET /search has
+    # returned this since §5.1 enrichment, so once the frontend forwards
+    # it back here, the suggestion/answer logic can look up this moment's
+    # real bronze annotations (object types, event name) instead of only
+    # pattern-matching the caption text. None is a normal value — an
+    # older frontend build, or a moment typed/edited by hand rather than
+    # coming straight from a search result — and every consumer of this
+    # field must fall back to caption-based guessing when it's absent.
+    event_id: str | None = None
 
 
 class ChatTurn(BaseModel):
