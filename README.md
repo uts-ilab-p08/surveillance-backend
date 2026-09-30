@@ -44,7 +44,7 @@ data of its own to manage.
 
 Because the RAG package runs in-process, there's no separate service to
 start or point a URL at — `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` and
-`QDRANT_URL`/`QDRANT_API_KEY` (see "Deploying to Render" below) are read
+`QDRANT_URL`/`QDRANT_API_KEY` (see "Deploying to Railway" below) are read
 by the package itself, not by this repo's own `Settings`. There's no
 mock fallback built into *this* repo for that path anymore (the old
 `RAG_SERVICE_URL`-unset mock was removed along with the HTTP client) —
@@ -263,7 +263,7 @@ from scratch, or insert the stub row into `auth.users` yourself.
 This runs every route against a real Postgres instance. `/search` and
 the `/assistant/*` endpoints also need the RAG package's own env vars
 set for real (`LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`,
-`QDRANT_URL`/`QDRANT_API_KEY` — see "Deploying to Render") — there's no
+`QDRANT_URL`/`QDRANT_API_KEY` — see "Deploying to Railway") — there's no
 mock fallback for those anymore:
 
 ```bash
@@ -372,11 +372,12 @@ RAM, but it isn't the active deploy target.
    `answer_query()` — worth raising with the RAG team if a demo needs
    true pre-retrieval filtering (see "Talking to the RAG repo").
 4. Confirm the newer dependencies (`av`, `pillow`, for
-   `GET /clips/{id}/thumbnail.jpg`) actually deploy cleanly on Render —
-   not yet verified on a live deploy.
-5. Double-check the Render dashboard actually has real values set for
-   every `sync: false` var in `render.yaml` (RAG/Qdrant/LLM vars,
-   `PUBLIC_BASE_URL`) — the YAML declares what Render should prompt for,
-   it doesn't set the values itself.
+   `GET /clips/{id}/thumbnail.jpg`) actually deploy cleanly on Railway —
+   not yet verified on a live deploy there (the move from Render to
+   Railway was about the RAG package's RAM footprint, not these).
+5. Double-check Railway's **Variables** actually have real values set for
+   the RAG/Qdrant/LLM vars and `PUBLIC_BASE_URL` (see "Deploying to
+   Railway") — listing them in `railway.json`/this README doesn't set
+   them, that's still a manual step per environment.
 6. Rate limiting and request logging middleware — not built yet, on
    purpose (see "Endpoints").
