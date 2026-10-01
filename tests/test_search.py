@@ -140,7 +140,13 @@ def test_search_fills_thumbnail_url_only_for_results_with_an_event_id():
     fake_result = RagQueryResult(
         answer="ok", results=[_result_item(event_id="ev1"), _result_item(event_id=None)]
     )
-    with patch.object(search_route, "rag_query", return_value=fake_result):
+    # Force the request.base_url fallback path regardless of what PUBLIC_BASE_URL
+    # happens to be set to in whoever's running this — a real value in a local
+    # .env (e.g. the deployed Render/Railway URL) would otherwise leak into this
+    # assertion and make the test's pass/fail depend on machine-local config.
+    settings = search_route.get_settings().model_copy(update={"public_base_url": None})
+    with patch.object(search_route, "rag_query", return_value=fake_result), \
+         patch.object(search_route, "get_settings", return_value=settings):
         resp = client.get("/api/v1/search", params={"q": "car parked"})
 
     results = resp.json()["results"]
@@ -160,3 +166,78 @@ def test_search_thumbnail_url_uses_public_base_url_when_configured():
         resp = client.get("/api/v1/search", params={"q": "car parked"})
 
     assert resp.json()["results"][0]["thumbnail_url"] == "https://api.example.com/api/v1/clips/ev1/thumbnail.jpg"
+
+
+# --- GET /search/stream (SSE) -----------------------------------------------
+
+
+def _parse_sse(raw: str) -> list[tuple[str, dict]]:
+    import json as _json
+
+    events = []
+    for block in raw.strip().split("\n\n"):
+        if not block.strip():
+            continue
+        event_line, data_line = block.split("\n", 1)
+        event = event_line.removeprefix("event: ")
+        data = _json.loads(data_line.removeprefix("data: "))
+        events.append((event, data))
+    return events
+
+
+def test_search_stream_emits_status_events_then_a_result_event():
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+    _override_db(mock_db)
+
+    fake_result = RagQueryResult(answer="Found it.", results=[_result_item()])
+    with patch.object(search_route, "rag_query", return_value=fake_result):
+        resp = client.get("/api/v1/search/stream", params={"q": "car parked"})
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    events = _parse_sse(resp.text)
+    kinds = [e for e, _ in events]
+    assert kinds.count("status") >= 2
+    assert kinds[-1] == "result"
+    assert events[-1][1]["answer"] == "Found it."
+
+    # thumbnails + recent-query side effects still ran, same as GET /search
+    mock_db.add.assert_called_once()
+    mock_db.commit.assert_called_once()
+
+
+def test_search_stream_passes_filters_through():
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+    _override_db(mock_db)
+
+    fake_result = RagQueryResult(answer="ok", results=[])
+    with patch.object(search_route, "rag_query", return_value=fake_result) as mock_query:
+        resp = client.get(
+            "/api/v1/search/stream",
+            params={"q": "car parked", "cameras": ["G424"], "min_confidence": 70},
+        )
+
+    assert resp.status_code == 200
+    _, kwargs = mock_query.call_args
+    assert kwargs["filters"].cameras == ["G424"]
+    assert kwargs["filters"].min_confidence == 70
+
+
+def test_search_stream_emits_error_event_instead_of_result_when_rag_unavailable():
+    mock_db = MagicMock()
+    _override_db(mock_db)
+
+    with patch.object(search_route, "rag_query", side_effect=search_route.RagServiceUnavailable("boom")):
+        resp = client.get("/api/v1/search/stream", params={"q": "car parked"})
+
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1][0] == "error"
+    assert "boom" in events[-1][1]["message"]
+    assert not any(e == "result" for e, _ in events)
+
+    # a failed search shouldn't still log a recent-query row
+    mock_db.add.assert_not_called()

@@ -1,4 +1,3 @@
-import json
 from typing import Generator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +15,7 @@ from app.schemas.assistant import (
     ChatTurn,
 )
 from app.services.assistant import AssistantUnavailable, generate_answer, generate_suggestions
+from app.services.sse import format_sse_event as _sse
 
 router = APIRouter(tags=["assistant"])
 
@@ -85,10 +85,6 @@ def ask_assistant(
 # result if the LLM call fails. The frontend should treat "result" or
 # "error" as the terminal event either way.
 # ---------------------------------------------------------------------------
-
-
-def _sse(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 def _ask_assistant_stream_events(body: AssistantAskRequest, db: Session) -> Generator[str, None, None]:
