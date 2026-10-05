@@ -89,7 +89,7 @@ def _build_timestamp(capture_start_local, start_seconds: float | None, capture_t
     return naive.replace(tzinfo=tz).isoformat()
 
 
-def _to_item(db: Session, source: dict) -> RagResultItem | None:
+def _to_item(db: Session, source: dict, citation_index: int) -> RagResultItem | None:
     """One RAG source -> one RagResultItem, enriched from bronze.
 
     Returns None if the event_id RAG returned no longer exists in bronze
@@ -121,6 +121,7 @@ def _to_item(db: Session, source: dict) -> RagResultItem | None:
         scene=event["scene"],
         timestamp=_build_timestamp(event["capture_start_local"], event["start_seconds"], event.get("capture_time_zone")),
         capture_start_local=format_capture_start_local(event["capture_start_local"]),
+        citation_index=citation_index,
         tags=tagging.derive_tags(object_types, event["event_name"]),
     )
 
@@ -166,7 +167,14 @@ def query(
     except Exception as exc:  # Qdrant unreachable, embedding failure, etc.
         raise RagServiceUnavailable(str(exc)) from exc
 
-    items = [_to_item(db, s) for s in response["sources"][:limit]]
+    # Number by position in RAG's own sources list BEFORE dropping
+    # anything — RAG's prompt labels them [1], [2], ... in this order
+    # (see that repo's pipeline._format_events), so this is the [n] the
+    # answer text uses.
+    items = [
+        _to_item(db, s, citation_index=i)
+        for i, s in enumerate(response["sources"][:limit], start=1)
+    ]
     items = [item for item in items if item is not None]
 
     if not filters.is_empty:
