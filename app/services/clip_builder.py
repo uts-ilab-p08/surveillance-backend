@@ -36,6 +36,13 @@ def _format_date(capture_start_local) -> str:
     return f"{capture_start_local.strftime('%b')} {capture_start_local.day}"
 
 
+def format_capture_start_local(capture_start_local) -> str | None:
+    """Naive ISO 8601, no offset — unlike rag_client._build_timestamp
+    this needs no timezone, because it's only ever shown as the camera's
+    own local time, never converted. Shared with rag_client.py."""
+    return capture_start_local.isoformat() if capture_start_local is not None else None
+
+
 def build_clip(
     db: Session,
     event: dict,
@@ -68,4 +75,5 @@ def build_clip(
         scene=event.get("scene"),
         thumbnailUrl=None,  # not yet produced anywhere upstream — see README
         videoUrl=event["video_url"],
+        captureStartLocal=format_capture_start_local(event["capture_start_local"]),
     )

@@ -39,6 +39,9 @@ class Clip(BaseModel):
     action: str  # free-text description of the detected action
     thumbnail_url: str | None = Field(default=None, alias="thumbnailUrl")
     video_url: str | None = Field(default=None, alias="videoUrl")
+    # Wall-clock start of the whole video file, ISO 8601 WITHOUT offset —
+    # see RagResultItem.capture_start_local for why and how it's used.
+    capture_start_local: str | None = Field(default=None, alias="captureStartLocal")
 
 
 class ClipListResponse(BaseModel):
