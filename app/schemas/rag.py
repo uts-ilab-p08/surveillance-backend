@@ -33,6 +33,10 @@ class RagResultItem(BaseModel):
     # playing time as capture_start_local + video.currentTime, as the
     # camera's local time — never converted to the viewer's timezone.
     capture_start_local: str | None = None
+    # 1-based position in RAG's sources — the [n] the answer cites it by.
+    # Set before any source is dropped (bronze drift, filters), so
+    # citations never shift onto the wrong result.
+    citation_index: int | None = None
     thumbnail_url: str | None = None  # GET /clips/{event_id}/thumbnail.jpg — set by the /search route
     tags: list[ClipTag] = []  # via app/services/tagging.py, same as Clip.tags
 

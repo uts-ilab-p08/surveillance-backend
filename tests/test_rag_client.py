@@ -137,6 +137,42 @@ def test_query_respects_limit_before_enrichment():
     assert get_event.call_count == 2
 
 
+# --- citation_index: the [n] the answer cites each source by ---------------
+
+
+def _events_by_id(missing: set[str] = frozenset(), **overrides_by_id):
+    """Stub for bronze.get_event_with_video: None for ids in `missing`."""
+    def lookup(db, event_id):
+        if event_id in missing:
+            return None
+        return _bronze_event(event_id=event_id, **overrides_by_id.get(event_id, {}))
+    return lookup
+
+
+def test_citation_index_keeps_rag_numbering_when_a_source_is_dropped():
+    sources = [_rag_source(event_id=f"event-{i}") for i in range(1, 6)]
+
+    with patch.object(rag_client, "_load_answer_query") as load_fn, \
+         patch.object(bronze, "get_event_with_video", side_effect=_events_by_id(missing={"event-3"})):
+        load_fn.return_value = lambda q: _answer_query_response(sources)
+        result = rag_client.query(db=object(), query_text="q")
+
+    assert [item.citation_index for item in result.results] == [1, 2, 4, 5]
+    assert [item.event_id for item in result.results] == ["event-1", "event-2", "event-4", "event-5"]
+
+
+def test_citation_index_keeps_rag_numbering_when_a_filter_drops_a_source():
+    sources = [_rag_source(event_id=f"event-{i}") for i in range(1, 4)]
+    lookup = _events_by_id(**{"event-1": {"camera_id": "G999"}})
+
+    with patch.object(rag_client, "_load_answer_query") as load_fn, \
+         patch.object(bronze, "get_event_with_video", side_effect=lookup):
+        load_fn.return_value = lambda q: _answer_query_response(sources)
+        result = rag_client.query(db=object(), query_text="q", filters=SearchFilters(cameras=["G336"]))
+
+    assert [item.citation_index for item in result.results] == [2, 3]
+
+
 def test_query_raises_service_unavailable_if_package_not_loadable():
     with patch.object(rag_client, "_load_answer_query", side_effect=ImportError("no rag")):
         with pytest.raises(RagServiceUnavailable):
