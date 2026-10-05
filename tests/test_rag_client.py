@@ -188,6 +188,27 @@ def test_timestamp_is_built_with_a_real_iana_zone():
     assert ts.endswith(("-05:00", "-04:00"))  # DST-dependent offset, either is a real one
 
 
+def test_capture_start_local_is_exposed_without_offset_even_if_timezone_unknown():
+    from datetime import datetime
+
+    event = _bronze_event(capture_start_local=datetime(2018, 3, 5, 13, 15, 0), capture_time_zone="unknown")
+    with patch.object(rag_client, "_load_answer_query") as load_fn, \
+         patch.object(bronze, "get_event_with_video", return_value=event):
+        load_fn.return_value = lambda q: _answer_query_response([_rag_source()])
+        result = rag_client.query(db=object(), query_text="q")
+
+    assert result.results[0].capture_start_local == "2018-03-05T13:15:00"
+
+
+def test_capture_start_local_is_none_when_bronze_has_none():
+    with patch.object(rag_client, "_load_answer_query") as load_fn, \
+         patch.object(bronze, "get_event_with_video", return_value=_bronze_event()):
+        load_fn.return_value = lambda q: _answer_query_response([_rag_source()])
+        result = rag_client.query(db=object(), query_text="q")
+
+    assert result.results[0].capture_start_local is None
+
+
 # --- tags -------------------------------------------------------------------
 
 

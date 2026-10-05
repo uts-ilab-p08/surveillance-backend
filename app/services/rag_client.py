@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.schemas.rag import RagQueryResult, RagResultItem
 from app.services import bronze, tagging
+from app.services.clip_builder import format_capture_start_local
 
 
 class RagServiceUnavailable(Exception):
@@ -119,6 +120,7 @@ def _to_item(db: Session, source: dict) -> RagResultItem | None:
         camera=event["camera_id"],
         scene=event["scene"],
         timestamp=_build_timestamp(event["capture_start_local"], event["start_seconds"], event.get("capture_time_zone")),
+        capture_start_local=format_capture_start_local(event["capture_start_local"]),
         tags=tagging.derive_tags(object_types, event["event_name"]),
     )
 

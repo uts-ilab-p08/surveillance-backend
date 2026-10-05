@@ -184,6 +184,12 @@ Two things worth knowing if this needs to change:
   result with no real timestamp, rather than guessing. This is an
   annotation-pipeline-level gap, not something this backend can fix on
   its own.
+- **`capture_start_local` (`captureStartLocal` on `Clip`) is always
+  populated.** It is the wall-clock start of the whole video file as ISO
+  8601 *without* an offset (e.g. `"2018-03-05T13:15:00"`). The frontend
+  shows the time of the frame being played as `capture_start_local +
+  video.currentTime`, labelled as the camera's local time. Never parse it
+  as UTC or convert it to the viewer's timezone.
 
 RAG owns the full user-facing answer text for `/search`; this backend's
 own LLM usage (`rag.llm.complete()`, the same package's shared client) is
