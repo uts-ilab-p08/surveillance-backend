@@ -11,4 +11,4 @@ av==18.1.0  # PyAV: in-process frame extraction for clip thumbnails (Render has 
 pillow==12.3.0  # JPEG encoding for PyAV frames (frame.to_image())
 pytest==8.3.3
 pytest-asyncio==0.24.0
-ilabs-cctv-rag @ git+https://github.com/uts-ilab-p08/iLabs-capstone-rag.git@v0.1.4
+ilabs-cctv-rag @ git+https://github.com/uts-ilab-p08/iLabs-capstone-rag.git@v0.1.5
