@@ -121,6 +121,7 @@ Supabase REST API directly, for manual testing) and pass it as
 | `GET /clips/{id}/thumbnail.jpg` | One JPEG frame for the clip — the moment with the most detected objects, via `bronze.geometries`. Extracted in-process with PyAV on first request (~1-6s, network-bound against R2) and cached on local disk after that. **Public** (no Bearer token): it's loaded via `<img src>`, and the source MP4 is already public. `GET /search` fills each result's `thumbnail_url` with this route. |
 | `GET /videos/{video_id}/tracks` | Per-object bounding-box tracks for one video, from `bronze.geometries`. `start_seconds`/`end_seconds` are validated against the video's real `duration_seconds` (422 if out of range) rather than trusted blindly. |
 | `GET /cameras` | The Cameras Directory modal — camera code, scene, and event count, aggregated from `bronze`. |
+| `GET /vocabulary` | What the search field can name — scenes, location synonyms, cameras and capture dates, read live from the RAG's Qdrant index (not `bronze`), so only searchable values are offered. 502 if Qdrant is unreachable. |
 | `GET /queries/recent?limit=N` | A user's recent searches, newest first. `limit` defaults to 20 (1-100); Home asks for 3. Rows are written as a side effect of `GET /search`. |
 | `GET /queries/saved` | A user's bookmarked searches. |
 | `POST /queries/saved` | Bookmarks a query. Idempotent — re-bookmarking the same (normalized) query text returns the existing row rather than creating a duplicate, and `hits` increments as a side effect of `GET /search` matching that text. |

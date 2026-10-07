@@ -181,3 +181,34 @@ def query(
         items = [item for item in items if _passes_filters(item, filters)]
 
     return RagQueryResult(answer=response["answer"], results=items)
+
+
+def vocabulary() -> dict:
+    """What the search field can name — GET /vocabulary. Read from the
+    RAG's Qdrant index (not bronze, as /cameras does) because that is what
+    RAG actually filters on: a scene or camera that is in Postgres but not
+    yet indexed would otherwise be offered and then match nothing.
+
+    Synonyms are trimmed to the scenes in the index, the same rule RAG's
+    filters.extract() applies. Not cached, on purpose — see the docstring
+    of rag.filters.vocabulary()."""
+    try:
+        from rag import filters, store
+
+        client = store.connect()
+    except Exception as exc:  # package missing, bad QDRANT_URL, etc.
+        raise RagServiceUnavailable(str(exc)) from exc
+
+    try:
+        vocab = filters.vocabulary(client)
+    except Exception as exc:  # both the facet API and the scroll fallback failed
+        raise RagServiceUnavailable(str(exc)) from exc
+    finally:
+        client.close()
+
+    return {
+        "scenes": sorted(vocab.scenes),
+        "synonyms": {word: scene for word, scene in sorted(filters.SYNONYMS.items()) if scene in vocab.scenes},
+        "cameras": sorted(vocab.cameras),
+        "dates": sorted(vocab.dates),
+    }
