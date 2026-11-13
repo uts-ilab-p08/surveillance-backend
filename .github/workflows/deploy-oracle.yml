@@ -1,0 +1,25 @@
+# Automatically deploy to the Oracle server on every push to main.
+# Required secrets: ORACLE_HOST, ORACLE_USER, ORACLE_SSH_KEY
+name: Deploy to Oracle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-oracle-surveillance
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Redeploy en Oracle
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          command_timeout: 30m
+          script: /opt/portfolio/deploy.sh surveillance
